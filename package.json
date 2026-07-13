@@ -1,0 +1,15 @@
+{
+  "name": "chatbot-servicell",
+  "version": "1.0.0",
+  "description": "Backend profesional para un chatbot de WhatsApp e Instagram con Meta APIs, Supabase y Claude",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.3",
+    "express": "^4.21.2"
+  }
+}
