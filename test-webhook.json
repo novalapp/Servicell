@@ -1,0 +1,25 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [{
+    "changes": [{
+      "value": {
+        "messaging_product": "whatsapp",
+        "contacts": [{
+          "profile": {
+            "name": "Natalia Prueba"
+          },
+          "wa_id": "573001112233"
+        }],
+        "messages": [{
+          "from": "573001112233",
+          "id": "wamid.TEST123",
+          "timestamp": "1720970000",
+          "type": "text",
+          "text": {
+            "body": "Hola, cuánto cuesta cambiar la pantalla de un iPhone 13?"
+          }
+        }]
+      }
+    }]
+  }]
+}
