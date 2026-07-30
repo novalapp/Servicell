@@ -41,6 +41,7 @@ router.post('/webhook', async (req, res) => {
 
         console.log(`📱 Mensaje de ${from}: ${text}`);
 
+        // Procesar en background
         handleMessage(from, text).catch(err => {
           console.error('Error en handleMessage:', err);
         });
@@ -57,96 +58,20 @@ async function handleMessage(from, text) {
     
     console.log('⏳ Esperando 2 segundos...');
     await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Obtener o crear contacto
-    const { data: contactData, error: contactError } = await supabase
-      .from('contacts')
-      .select('id')
-      .eq('phone_number', from)
-      .eq('client_id', CLIENT_ID)
-      .single();
-
-    let contactId;
-    if (contactError || !contactData) {
-      const { data: newContact } = await supabase
-        .from('contacts')
-        .insert([{
-          client_id: CLIENT_ID,
-          phone_number: from,
-          source: 'whatsapp'
-        }])
-        .select()
-        .single();
-      contactId = newContact.id;
-    } else {
-      contactId = contactData.id;
-    }
-
-    // Obtener o crear conversación
-    const { data: conversationData } = await supabase
-      .from('conversations')
-      .select('id')
-      .eq('contact_id', contactId)
-      .eq('status', 'open')
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single();
-
-    let conversationId;
-    if (!conversationData) {
-      const { data: newConv } = await supabase
-        .from('conversations')
-        .insert([{
-          contact_id: contactId,
-          client_id: CLIENT_ID,
-          status: 'open'
-        }])
-        .select()
-        .single();
-      conversationId = newConv.id;
-    } else {
-      conversationId = conversationData.id;
-    }
-
+    
     // Guardar mensaje del cliente
-    await supabase
-      .from('messages')
-      .insert([{
-        conversation_id: conversationId,
-        sender_type: 'contact',
-        message_text: text
-      }]);
-
-    // Recuperar historial de mensajes previos
-    const { data: messageHistory } = await supabase
-      .from('messages')
-      .select('sender_type, message_text')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true })
-      .limit(20);
-
-    // Convertir historial al formato que Claude espera
-    const conversationHistory = (messageHistory || []).map(msg => ({
-      role: msg.sender_type === 'agent' ? 'assistant' : 'user',
-      content: msg.message_text
-    }));
-
-    console.log('🤖 Llamando Claude con historial...');
-    const response = await generateResponse(text, CLIENT_ID, conversationHistory);
+    await supabase.from('messages').insert([{ sender_type: 'contact', message_text: text }]).catch(() => {});
+    
+    console.log('🤖 Llamando Claude...');
+    const response = await generateResponse (text, CLIENT_ID);
     console.log(`✍️ Respuesta: ${response}`);
-
+    
     // Guardar respuesta del agente
-    await supabase
-      .from('messages')
-      .insert([{
-        conversation_id: conversationId,
-        sender_type: 'agent',
-        message_text: response
-      }]);
-
+    await supabase.from('messages').insert([{ sender_type: 'agent', message_text: response }]).catch(() => {});
+    
     console.log('📤 Enviando respuesta...');
     await sendMessage(from, response);
-
+    
   } catch (error) {
     console.error('❌ Error en handleMessage:', error);
   }
@@ -155,6 +80,10 @@ async function handleMessage(from, text) {
 async function sendMessage(to, body) {
   try {
     const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    
+    console.log(`🔗 URL: ${url}`);
+    console.log(`📲 To: ${to}`);
+    console.log(`💬 Body: ${body}`);
     
     const res = await fetch(url, {
       method: 'POST',
@@ -171,8 +100,10 @@ async function sendMessage(to, body) {
     });
 
     const data = await res.json();
+    console.log('📨 Respuesta Meta:', data);
+    
     if (data.messages) {
-      console.log(`✅ Mensaje enviado`);
+      console.log(`✅ Mensaje enviado a ${to}`);
     } else {
       console.error('❌ Error Meta:', data);
     }
