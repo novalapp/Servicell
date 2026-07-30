@@ -28,7 +28,7 @@ async function getAgentConfig(clientId) {
 async function getProductsInfo(clientId) {
   const { data, error } = await supabase
     .from("products")
-    .select("name, sku, category, price, stock")
+    .select("name, sku, category, price, stock, capacity, color, battery_status")
     .eq("client_id", clientId)
     .eq("active", true)
     .order("name");
@@ -44,13 +44,25 @@ async function getProductsInfo(clientId) {
 
   // Format products for the prompt
   const productsByCategory = {};
+
   data.forEach(product => {
     if (!productsByCategory[product.category]) {
       productsByCategory[product.category] = [];
     }
+
     const stock = product.stock > 0 ? `${product.stock} en stock` : "Agotado";
+
+    // Capacidad y color, si existen
+    const detalles = [product.capacity, product.color].filter(Boolean).join(" ");
+    const detallesTexto = detalles ? ` ${detalles}` : "";
+
+    // Estado de batería, si existe
+    const bateria = product.battery_status
+      ? ` | Batería: ${product.battery_status}`
+      : "";
+
     productsByCategory[product.category].push(
-      `- ${product.name} (${product.sku}): $${product.price.toLocaleString('es-CO')} COP - ${stock}`
+      `- ${product.name}${detallesTexto} (${product.sku}): $${product.price.toLocaleString('es-CO')} COP - ${stock}${bateria}`
     );
   });
 
@@ -65,6 +77,7 @@ async function getProductsInfo(clientId) {
 // Get active promotions
 async function getPromotionsInfo(clientId) {
   const now = new Date();
+
   const { data, error } = await supabase
     .from("promotions")
     .select("title, description, discount_percentage, discount_amount, valid_until")
@@ -78,7 +91,7 @@ async function getPromotionsInfo(clientId) {
 
   let promotionsInfo = "\nPROMOCIONES VIGENTES:\n";
   data.forEach(promo => {
-    const discount = promo.discount_percentage 
+    const discount = promo.discount_percentage
       ? `${promo.discount_percentage}% de descuento`
       : `Descuento de $${promo.discount_amount?.toLocaleString('es-CO')} COP`;
     promotionsInfo += `- ${promo.title}: ${promo.description} (${discount})\n`;
@@ -92,7 +105,7 @@ async function generateResponse(messageContent, clientId, conversationHistory = 
   try {
     // Get agent config
     const config = await getAgentConfig(clientId);
-    
+
     // Get current products and promotions
     const productsInfo = await getProductsInfo(clientId);
     const promotionsInfo = await getPromotionsInfo(clientId);
@@ -105,6 +118,11 @@ ${promotionsInfo}
 
 INSTRUCCIONES IMPORTANTES:
 - Siempre consulta el inventario antes de confirmar disponibilidad
+- El inventario incluye el estado de batería de cada equipo. Si el cliente
+  pregunta por la batería, dale el dato exacto de ese equipo. Nunca lo inventes
+  ni des un porcentaje aproximado que no esté en el inventario.
+- Si un equipo no tiene dato de batería en el inventario, dile al cliente que
+  el asesor se lo confirma
 - Si no hay stock, ofrece registrar al cliente para avisar cuando llegue
 - Nunca prometas fechas exactas de entrega sin verificar
 - Si el cliente pregunta por algo que no sabes, escala a Paula
