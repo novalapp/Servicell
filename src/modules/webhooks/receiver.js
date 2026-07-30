@@ -73,7 +73,7 @@ async function handleMessage(from, text) {
 
 async function sendMessage(to, body) {
   try {
-    const url = `https://graph.instagram.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
     
     console.log(`🔗 URL: ${url}`);
     console.log(`📲 To: ${to}`);
