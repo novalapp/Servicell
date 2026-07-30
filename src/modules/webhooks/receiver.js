@@ -7,6 +7,10 @@ const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
+console.log('META_PHONE_NUMBER_ID:', META_PHONE_NUMBER_ID);
+console.log('META_ACCESS_TOKEN:', META_ACCESS_TOKEN ? 'SET' : 'NOT SET');
+console.log('META_VERIFY_TOKEN:', META_VERIFY_TOKEN);
+
 // Webhook verification (GET)
 router.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
@@ -17,7 +21,7 @@ router.get('/webhook', (req, res) => {
     console.log('✅ Webhook verificado correctamente');
     res.status(200).send(challenge);
   } else {
-    console.log('❌ Token de verificación inválido');
+    console.log('❌ Token de verificación inválido', { mode, token });
     res.sendStatus(403);
   }
 });
@@ -28,6 +32,8 @@ router.post('/webhook', async (req, res) => {
 
   // Responder inmediatamente a Meta
   res.status(200).send('EVENT_RECEIVED');
+
+  console.log('📨 Webhook recibido:', JSON.stringify(body, null, 2));
 
   if (body.object === 'whatsapp_business_account') {
     const entry = body.entry[0];
@@ -54,6 +60,7 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
   try {
     const CLIENT_ID = 'c37d2508-c9d1-422d-9fef-23901bc51145';
 
+    console.log(`⏳ Esperando 2 segundos antes de responder...`);
     // Esperar 2 segundos (para que se sienta humano)
     await new Promise(resolve => setTimeout(resolve, 2000));
 
@@ -77,8 +84,10 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
         .select()
         .single();
       contactId = newContact.id;
+      console.log(`👤 Nuevo contacto creado: ${contactId}`);
     } else {
       contactId = contactData.id;
+      console.log(`👤 Contacto existente: ${contactId}`);
     }
 
     // Obtener o crear conversación
@@ -103,8 +112,10 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
         .select()
         .single();
       conversationId = newConv.id;
+      console.log(`💬 Nueva conversación creada: ${conversationId}`);
     } else {
       conversationId = conversationData.id;
+      console.log(`💬 Conversación existente: ${conversationId}`);
     }
 
     // Guardar mensaje del cliente
@@ -116,9 +127,12 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
         message_text: messageText,
         external_message_id: messageId
       }]);
+    console.log(`💾 Mensaje del cliente guardado`);
 
     // Generar respuesta con Claude
+    console.log(`🤖 Generando respuesta con Claude...`);
     const responseText = await generateResponse(messageText, contactId, CLIENT_ID);
+    console.log(`✍️ Respuesta generada: ${responseText}`);
 
     // Guardar respuesta del agente
     await supabase
@@ -128,44 +142,8 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
         sender_type: 'agent',
         message_text: responseText
       }]);
+    console.log(`💾 Respuesta guardada en BD`);
 
     // Enviar mensaje por WhatsApp
-    await sendWhatsAppMessage(phoneNumber, responseText);
-
-  } catch (error) {
-    console.error('Error procesando mensaje:', error);
-  }
-}
-
-async function sendWhatsAppMessage(phoneNumber, messageText) {
-  try {
-    const url = `https://graph.instagram.com/v18.0/${META_PHONE_NUMBER_ID}/messages`;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${META_ACCESS_TOKEN}`
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: phoneNumber,
-        type: 'text',
-        text: {
-          body: messageText
-        }
-      })
-    });
-
-    const data = await response.json();
-    if (data.messages) {
-      console.log(`✅ Mensaje enviado a ${phoneNumber}`);
-    } else {
-      console.error('❌ Error al enviar mensaje:', data);
-    }
-  } catch (error) {
-    console.error('Error enviando WhatsApp:', error);
-  }
-}
-
-module.exports = router;
+    console.log(`📤 Enviando mensaje por WhatsApp a ${phoneNumber}...`);
+    await
