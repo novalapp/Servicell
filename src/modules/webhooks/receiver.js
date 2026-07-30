@@ -59,15 +59,9 @@ async function handleMessage(from, text) {
     console.log('⏳ Esperando 2 segundos...');
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // Guardar mensaje del cliente
-    await supabase.from('messages').insert([{ sender_type: 'contact', message_text: text }]).catch(() => {});
-    
     console.log('🤖 Llamando Claude...');
     const response = await generateResponse (text, CLIENT_ID);
     console.log(`✍️ Respuesta: ${response}`);
-    
-    // Guardar respuesta del agente
-    await supabase.from('messages').insert([{ sender_type: 'agent', message_text: response }]).catch(() => {});
     
     console.log('📤 Enviando respuesta...');
     await sendMessage(from, response);
