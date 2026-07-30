@@ -155,7 +155,7 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
 
 async function sendWhatsAppMessage(phoneNumber, messageText) {
   try {
-    const url = `https://graph.instagram.com/v18.0/${META_PHONE_NUMBER_ID}/messages`;
+    const url = `https://graph.instagram.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
 
     console.log(`🔗 URL: ${url}`);
     console.log(`📲 Enviando a: ${phoneNumber}`);
