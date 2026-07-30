@@ -10,6 +10,9 @@ const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 // ID de Servicell en la tabla clients
 const CLIENT_ID = 'c37d2508-c9d1-422d-9fef-23901bc51145';
 
+// ID del canal "Servicell WhatsApp" en la tabla channels
+const CHANNEL_ID = '18e8df74-2ed5-415b-ac84-2b043eebac7b';
+
 // Cuántos mensajes anteriores se le pasan a Claude como contexto
 const HISTORY_LIMIT = 10;
 
@@ -126,6 +129,7 @@ async function getOrCreateContact(phone) {
     .from('contacts')
     .insert([{
       client_id: CLIENT_ID,
+      channel_id: CHANNEL_ID,
       external_id: phone,
       display_name: phone
     }])
@@ -155,6 +159,7 @@ async function getOrCreateConversation(contactId) {
     .from('conversations')
     .insert([{
       client_id: CLIENT_ID,
+      channel_id: CHANNEL_ID,
       contact_id: contactId,
       status: 'open',
       handled_by: 'ai',
