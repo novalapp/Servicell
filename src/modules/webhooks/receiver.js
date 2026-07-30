@@ -146,4 +146,48 @@ async function processMessage(phoneNumber, messageText, messageId, timestamp) {
 
     // Enviar mensaje por WhatsApp
     console.log(`📤 Enviando mensaje por WhatsApp a ${phoneNumber}...`);
-    await
+    await sendWhatsAppMessage(phoneNumber, responseText);
+
+  } catch (error) {
+    console.error('❌ Error procesando mensaje:', error);
+  }
+}
+
+async function sendWhatsAppMessage(phoneNumber, messageText) {
+  try {
+    const url = `https://graph.instagram.com/v18.0/${META_PHONE_NUMBER_ID}/messages`;
+
+    console.log(`🔗 URL: ${url}`);
+    console.log(`📲 Enviando a: ${phoneNumber}`);
+    console.log(`💬 Mensaje: ${messageText}`);
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${META_ACCESS_TOKEN}`
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: phoneNumber,
+        type: 'text',
+        text: {
+          body: messageText
+        }
+      })
+    });
+
+    const data = await response.json();
+    console.log(`📨 Respuesta de Meta:`, JSON.stringify(data));
+
+    if (data.messages) {
+      console.log(`✅ Mensaje enviado a ${phoneNumber}`);
+    } else {
+      console.error('❌ Error al enviar mensaje:', data);
+    }
+  } catch (error) {
+    console.error('❌ Error enviando WhatsApp:', error);
+  }
+}
+
+module.exports = router;
