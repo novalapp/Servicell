@@ -34,6 +34,9 @@ const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
 // Cuántos mensajes anteriores se le pasan a Claude como contexto
 const HISTORY_LIMIT = 10;
 
+// Guarda qué caso está esperando confirmación de cierre
+let cierrePendiente = null;
+
 console.log('✅ Webhook receiver cargado');
 
 // ---------------------------------------------------------------
@@ -125,6 +128,18 @@ function estadoAtencion() {
   return 'abierto';
 }
 
+// "hoy", "ayer", "hace 3 días"
+function haceCuanto(fechaISO) {
+  if (!fechaISO) return '';
+
+  const entonces = new Date(fechaISO);
+  const dias = Math.floor((Date.now() - entonces.getTime()) / 86400000);
+
+  if (dias <= 0) return 'hoy';
+  if (dias === 1) return 'ayer';
+  return `hace ${dias} días`;
+}
+
 // ---------------------------------------------------------------
 // FLUJO PRINCIPAL
 // ---------------------------------------------------------------
@@ -195,28 +210,105 @@ async function handleMessage(from, text) {
 
 async function handleAgente(text) {
   const limpio = text.trim().toLowerCase();
-  const pideCasos = PALABRAS_CASOS.some(p => limpio === p || limpio.startsWith(p + ' '));
 
-  if (!pideCasos) {
-    console.log('👔 Mensaje del agente, no pide casos, se ignora');
+  // ¿Está confirmando un cierre?
+  if (cierrePendiente) {
+    if (limpio === 'si' || limpio === 'sí') {
+      await confirmarCierre();
+      return;
+    }
+    if (limpio === 'no') {
+      cierrePendiente = null;
+      await sendMessage(AGENT_PHONE, 'Listo, no cerré nada 👌');
+      return;
+    }
+    // Si escribe otra cosa, se cancela la confirmación y sigue el flujo normal
+    cierrePendiente = null;
+  }
+
+  // ¿Pide cerrar un caso? -> "cerrar 1"
+  const pideCerrar = limpio.match(/^cerrar\s+(\d+)$/);
+  if (pideCerrar) {
+    await pedirConfirmacionCierre(parseInt(pideCerrar[1], 10));
     return;
   }
 
-  console.log('📋 El agente pidió los casos pendientes');
+  // ¿Pide la lista de casos?
+  const pideCasos = PALABRAS_CASOS.some(p => limpio === p || limpio.startsWith(p + ' '));
+  if (pideCasos) {
+    console.log('📋 El agente pidió los casos pendientes');
+    try {
+      const casos = await getCasosPendientes();
+      await sendMessage(AGENT_PHONE, mensajeCasos(casos));
+    } catch (err) {
+      console.error('⚠️ Error consultando casos:', err.message);
+      await sendMessage(AGENT_PHONE, 'No pude consultar los casos en este momento. Intenta de nuevo en un minuto.');
+    }
+    return;
+  }
 
+  console.log('👔 Mensaje del agente sin comando, se ignora');
+}
+
+async function pedirConfirmacionCierre(numero) {
   try {
     const casos = await getCasosPendientes();
-    await sendMessage(AGENT_PHONE, mensajeCasos(casos));
+
+    if (numero < 1 || numero > casos.length) {
+      await sendMessage(AGENT_PHONE, `No existe el caso ${numero}. Escribe "casos" para ver la lista.`);
+      return;
+    }
+
+    const caso = casos[numero - 1];
+    const nombre = caso.contacts?.display_name || 'Sin nombre';
+
+    cierrePendiente = { id: caso.id, nombre };
+
+    await sendMessage(
+      AGENT_PHONE,
+      `¿Cierro el caso de ${nombre}?\n${caso.summary || ''}\n\nResponde "si" para confirmar.`
+    );
   } catch (err) {
-    console.error('⚠️ Error consultando casos:', err.message);
-    await sendMessage(AGENT_PHONE, 'No pude consultar los casos en este momento. Intenta de nuevo en un minuto.');
+    console.error('⚠️ Error preparando cierre:', err.message);
+    await sendMessage(AGENT_PHONE, 'No pude consultar los casos en este momento.');
+  }
+}
+
+async function confirmarCierre() {
+  const caso = cierrePendiente;
+  cierrePendiente = null;
+
+  if (!caso) return;
+
+  try {
+    const { error } = await supabase
+      .from('conversations')
+      .update({
+        status: 'closed',
+        closed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', caso.id);
+
+    if (error) throw new Error(error.message);
+
+    const restantes = await getCasosPendientes();
+    const texto = restantes.length === 0
+      ? 'No quedan casos pendientes 👌'
+      : `Quedan ${restantes.length} pendiente${restantes.length === 1 ? '' : 's'}.`;
+
+    await sendMessage(AGENT_PHONE, `✅ Caso de ${caso.nombre} cerrado.\n${texto}`);
+    console.log(`✅ Caso cerrado: ${caso.nombre}`);
+  } catch (err) {
+    console.error('⚠️ Error cerrando el caso:', err.message);
+    await sendMessage(AGENT_PHONE, 'No pude cerrar el caso. Intenta de nuevo en un minuto.');
   }
 }
 
 async function getCasosPendientes() {
   const { data, error } = await supabase
     .from('conversations')
-    .select('summary, updated_at, contacts(display_name, external_id, metadata)')
+    .select('id, summary, updated_at, contacts(display_name, external_id, metadata)')
     .eq('client_id', CLIENT_ID)
     .eq('status', 'waiting_agent')
     .order('updated_at', { ascending: true })
@@ -234,16 +326,27 @@ function mensajeCasos(casos) {
   const lineas = casos.map((c, i) => {
     const contacto = c.contacts || {};
     const meta = contacto.metadata || {};
-    const telefono = meta.celular || contacto.external_id || '';
 
-    return `${i + 1}. ${contacto.display_name || 'Sin nombre'}
-   ${c.summary || 'Sin detalle'}
-   💬 wa.me/${(contacto.external_id || '').replace(/\D/g, '')}
-   📱 ${telefono}`;
+    const telefono = meta.celular || contacto.external_id || '';
+    const whatsapp = (contacto.external_id || '').replace(/\D/g, '');
+    const cedula = meta.cedula ? ` · CC ${meta.cedula}` : '';
+
+    const ubicacion = [meta.direccion, meta.ciudad].filter(Boolean).join(', ');
+    const lineaUbicacion = ubicacion ? `\n   📍 ${ubicacion}` : '';
+
+    return `${i + 1}. ${contacto.display_name || 'Sin nombre'}${cedula}  (${haceCuanto(c.updated_at)})
+   🛒 ${c.summary || 'Sin detalle'}${lineaUbicacion}
+   📱 ${telefono}
+   💬 wa.me/${whatsapp}`;
   });
 
   const plural = casos.length === 1 ? 'caso' : 'casos';
-  return `📋 ${casos.length} ${plural} esperando:\n\n${lineas.join('\n\n')}`;
+
+  return `📋 ${casos.length} ${plural} esperando:
+
+${lineas.join('\n\n')}
+
+Para cerrar uno escribe: cerrar 1`;
 }
 
 // ---------------------------------------------------------------
@@ -278,7 +381,7 @@ async function cerrarVenta(from, contactId, conversation, datos) {
         handled_by: 'human',
         status: 'waiting_agent',
         updated_at: new Date().toISOString(),
-        summary: `${datos.pedido || 'Pedido'}${datos.total ? ` — ${datos.total}` : ''} — ${datos.ciudad || ''} — pago por ${datos.medio_pago || 'definir'}`
+        summary: `${datos.pedido || 'Pedido'}${datos.total ? ` — ${datos.total}` : ''} — pago por ${datos.medio_pago || 'definir'}`
       })
       .eq('id', conversation.id);
 
