@@ -22,6 +22,15 @@ const AGENT_PHONE = '573207679813';   // con 57 al inicio, sin espacios
 const AGENT_NAME = 'Duván';
 const AGENT_DISPLAY = '320 767 9813'; // como se le muestra al cliente
 
+// Horario de atención (hora de Colombia)
+const HORA_APERTURA = 10;             // abre a las 10am todos los días
+const HORA_CIERRE_SEMANA = 19;        // lunes a viernes cierra 7pm
+const HORA_CIERRE_FINDE = 17;         // sábados y domingos cierra 5pm
+const MARGEN_CIERRE_MIN = 30;         // deja de decir "ya te escriben" 30 min antes
+
+// Palabras con las que el agente pide los casos pendientes
+const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
+
 // Cuántos mensajes anteriores se le pasan a Claude como contexto
 const HISTORY_LIMIT = 10;
 
@@ -74,13 +83,56 @@ router.post('/webhook', async (req, res) => {
 });
 
 // ---------------------------------------------------------------
+// HORARIO
+// ---------------------------------------------------------------
+
+// Devuelve la hora actual en Colombia, sin importar dónde esté el servidor
+function ahoraColombia() {
+  const partes = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Bogota',
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+    hour12: false
+  }).formatToParts(new Date());
+
+  const valor = tipo => partes.find(p => p.type === tipo)?.value;
+
+  const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+  return {
+    hora: parseInt(valor('hour'), 10) % 24,
+    minuto: parseInt(valor('minute'), 10),
+    dia: dias[valor('weekday')]
+  };
+}
+
+// 'abierto'  → el agente puede escribir en minutos
+// 'temprano' → todavía no abren, pero abren HOY
+// 'cerrado'  → ya cerraron, atienden MAÑANA
+function estadoAtencion() {
+  const { hora, minuto, dia } = ahoraColombia();
+
+  const esFinde = (dia === 0 || dia === 6);
+  const horaCierre = esFinde ? HORA_CIERRE_FINDE : HORA_CIERRE_SEMANA;
+
+  const minutosAhora = hora * 60 + minuto;
+  const minutosApertura = HORA_APERTURA * 60;
+  const minutosCierre = horaCierre * 60 - MARGEN_CIERRE_MIN;
+
+  if (minutosAhora < minutosApertura) return 'temprano';
+  if (minutosAhora >= minutosCierre) return 'cerrado';
+  return 'abierto';
+}
+
+// ---------------------------------------------------------------
 // FLUJO PRINCIPAL
 // ---------------------------------------------------------------
 
 async function handleMessage(from, text) {
-  // Si escribe el agente, no lo tratamos como cliente
+  // Si escribe el agente, se le atiende aparte
   if (from === AGENT_PHONE) {
-    console.log('👔 Mensaje del agente, se ignora');
+    await handleAgente(text);
     return;
   }
 
@@ -138,12 +190,72 @@ async function handleMessage(from, text) {
 }
 
 // ---------------------------------------------------------------
+// CUANDO ESCRIBE EL AGENTE
+// ---------------------------------------------------------------
+
+async function handleAgente(text) {
+  const limpio = text.trim().toLowerCase();
+  const pideCasos = PALABRAS_CASOS.some(p => limpio === p || limpio.startsWith(p + ' '));
+
+  if (!pideCasos) {
+    console.log('👔 Mensaje del agente, no pide casos, se ignora');
+    return;
+  }
+
+  console.log('📋 El agente pidió los casos pendientes');
+
+  try {
+    const casos = await getCasosPendientes();
+    await sendMessage(AGENT_PHONE, mensajeCasos(casos));
+  } catch (err) {
+    console.error('⚠️ Error consultando casos:', err.message);
+    await sendMessage(AGENT_PHONE, 'No pude consultar los casos en este momento. Intenta de nuevo en un minuto.');
+  }
+}
+
+async function getCasosPendientes() {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('summary, updated_at, contacts(display_name, external_id, metadata)')
+    .eq('client_id', CLIENT_ID)
+    .eq('status', 'waiting_agent')
+    .order('updated_at', { ascending: true })
+    .limit(20);
+
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
+function mensajeCasos(casos) {
+  if (!casos || casos.length === 0) {
+    return '📋 No hay casos pendientes en este momento 👌';
+  }
+
+  const lineas = casos.map((c, i) => {
+    const contacto = c.contacts || {};
+    const meta = contacto.metadata || {};
+    const telefono = meta.celular || contacto.external_id || '';
+
+    return `${i + 1}. ${contacto.display_name || 'Sin nombre'}
+   ${c.summary || 'Sin detalle'}
+   💬 wa.me/${(contacto.external_id || '').replace(/\D/g, '')}
+   📱 ${telefono}`;
+  });
+
+  const plural = casos.length === 1 ? 'caso' : 'casos';
+  return `📋 ${casos.length} ${plural} esperando:\n\n${lineas.join('\n\n')}`;
+}
+
+// ---------------------------------------------------------------
 // CIERRE DE VENTA Y TRASPASO
 // ---------------------------------------------------------------
 
 async function cerrarVenta(from, contactId, conversation, datos) {
+  const estado = estadoAtencion();
+  console.log(`🕐 Estado de atención: ${estado}`);
+
   // 1. Mensaje al cliente (siempre, aunque falle lo demás)
-  const mensajeCliente = mensajeTraspaso(datos);
+  const mensajeCliente = mensajeTraspaso(datos, estado);
   await sendMessage(from, mensajeCliente);
 
   // 2. Aviso al agente
@@ -165,7 +277,8 @@ async function cerrarVenta(from, contactId, conversation, datos) {
       .update({
         handled_by: 'human',
         status: 'waiting_agent',
-        summary: `${datos.pedido || 'Pedido'} — ${datos.total || ''} — ${datos.ciudad || ''} — pago por ${datos.medio_pago || 'definir'}`
+        updated_at: new Date().toISOString(),
+        summary: `${datos.pedido || 'Pedido'}${datos.total ? ` — ${datos.total}` : ''} — ${datos.ciudad || ''} — pago por ${datos.medio_pago || 'definir'}`
       })
       .eq('id', conversation.id);
 
@@ -228,18 +341,32 @@ async function guardarDatosEnvio(contactId, datos) {
 // TEXTOS
 // ---------------------------------------------------------------
 
-function mensajeTraspaso(datos) {
-  const nombre = (datos.nombre || '').split(' ')[0];
-
-  return `¡Listo ${nombre}! Ya quedó registrado tu pedido:
-
-📱 ${datos.pedido || 'Tu pedido'}${datos.total ? ` — ${datos.total}` : ''}
+function mensajeTraspaso(datos, estado) {
+  const resumen = `📱 ${datos.pedido || 'Tu pedido'}${datos.total ? ` — ${datos.total}` : ''}
 📍 ${datos.direccion || ''}${datos.ciudad ? `, ${datos.ciudad}` : ''}
-💳 ${datos.medio_pago || 'Por definir'}
+💳 ${datos.medio_pago || 'Por definir'}`;
 
-En unos minutos te escribe ${AGENT_NAME}, de nuestra área de ventas, desde el ${AGENT_DISPLAY}. No te asustes cuando te llegue de otro número, es parte del proceso 😊
+  let cuando;
+  if (estado === 'abierto') {
+    cuando = `En unos minutos te escribe *${AGENT_NAME}*, de nuestra área de ventas, desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
+  } else {
+    const dia = (estado === 'temprano') ? 'hoy' : 'mañana';
+    cuando = `Como estamos fuera del horario de atención, nuestro asesor del área de ventas te escribirá *${dia} a partir de las ${HORA_APERTURA}am*. Se llama *${AGENT_NAME}* y te escribe desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
+  }
 
-Él ya tiene todos tus datos, así que te da la información de pago y te confirma el envío.`;
+  const cierre = (estado === 'abierto')
+    ? '¡Gracias por tu compra! Quedas atento que ya te escribe 🙌'
+    : '¡Gracias por tu compra! Quedas atento a su mensaje 🙌';
+
+  return `¡Perfecto! Tu pedido ya quedó registrado:
+
+${resumen}
+
+${cuando}
+
+Él ya tiene todos tus datos, así que te da la información de pago y te confirma el envío.
+
+${cierre}`;
 }
 
 function mensajeAgente(telefonoCliente, datos) {
@@ -255,9 +382,16 @@ function mensajeAgente(telefonoCliente, datos) {
 }
 
 function mensajeYaEstaConVentas() {
-  return `Ya estás con nuestra área de ventas 😊 ${AGENT_NAME} te ayuda por ese chat con el pago y el envío.
+  const estado = estadoAtencion();
+
+  if (estado === 'abierto') {
+    return `Ya estás con nuestra área de ventas 😊 ${AGENT_NAME} te ayuda por ese chat con el pago y el envío.
 
 Si aún no te ha escrito, puedes buscarlo en el ${AGENT_DISPLAY}.`;
+  }
+
+  const dia = (estado === 'temprano') ? 'hoy' : 'mañana';
+  return `Tu pedido ya quedó registrado 😊 ${AGENT_NAME}, de nuestra área de ventas, te escribe ${dia} a partir de las ${HORA_APERTURA}am desde el ${AGENT_DISPLAY}.`;
 }
 
 // ---------------------------------------------------------------
