@@ -1,8 +1,8 @@
 const { createClient } = require("@supabase/supabase-js");
-const { SUPABASE_URL, SUPABASE_ANON_KEY } = require("./env");
+const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY } = require("./env");
 
 // Environment variables are validated in src/server.js before this module is loaded
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 module.exports = supabase;
 // Force schema refresh
