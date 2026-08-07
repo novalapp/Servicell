@@ -185,12 +185,20 @@ async function handleMessage(from, text) {
     console.log('🤖 Llamando Claude...');
     const respuestaCruda = await generateResponse(text, CLIENT_ID, history);
 
-    const { datos, textoLimpio } = extraerDatos(respuestaCruda);
+    const { datos, fotos, textoLimpio } = extraerMarcas(respuestaCruda);
 
     if (datos) {
       console.log('🛒 Pedido completo detectado, iniciando traspaso');
       await cerrarVenta(from, contactId, conversation, datos);
-    } else {
+      return;
+    }
+
+    // Enviar fotos si Claude las pidió
+    if (fotos.length > 0) {
+      await enviarFotos(from, fotos);
+    }
+
+    if (textoLimpio) {
       console.log(`✍️ Respuesta: ${textoLimpio}`);
       await sendMessage(from, textoLimpio);
 
@@ -202,6 +210,72 @@ async function handleMessage(from, text) {
   } catch (error) {
     console.error('❌ Error en handleMessage:', error);
   }
+}
+
+// ---------------------------------------------------------------
+// IMÁGENES
+// ---------------------------------------------------------------
+
+async function enviarFotos(to, fotos) {
+  for (const foto of fotos) {
+    try {
+      let url = null;
+
+      if (foto.tipo === 'lista') {
+        url = await getListaPrecios();
+      } else {
+        url = await getFotoModelo(foto.modelo, foto.color);
+      }
+
+      if (!url) {
+        console.log(`📷 Sin foto para ${foto.modelo || 'lista'} ${foto.color || ''}`);
+        continue;
+      }
+
+      await sendImage(to, url);
+    } catch (err) {
+      console.error('⚠️ Error enviando foto:', err.message);
+    }
+  }
+}
+
+async function getFotoModelo(modelo, color) {
+  if (!modelo) return null;
+
+  let consulta = supabase
+    .from('model_images')
+    .select('image_url')
+    .eq('client_id', CLIENT_ID)
+    .eq('active', true)
+    .ilike('model', modelo);
+
+  if (color) consulta = consulta.ilike('color', color);
+
+  const { data, error } = await consulta.limit(1);
+
+  if (error) {
+    console.error('⚠️ Error buscando foto:', error.message);
+    return null;
+  }
+
+  return data && data.length > 0 ? data[0].image_url : null;
+}
+
+async function getListaPrecios() {
+  const { data, error } = await supabase
+    .from('price_list_images')
+    .select('image_url')
+    .eq('client_id', CLIENT_ID)
+    .eq('active', true)
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error) {
+    console.error('⚠️ Error buscando lista de precios:', error.message);
+    return null;
+  }
+
+  return data && data.length > 0 ? data[0].image_url : null;
 }
 
 // ---------------------------------------------------------------
@@ -222,7 +296,6 @@ async function handleAgente(text) {
       await sendMessage(AGENT_PHONE, 'Listo, no cerré nada 👌');
       return;
     }
-    // Si escribe otra cosa, se cancela la confirmación y sigue el flujo normal
     cierrePendiente = null;
   }
 
@@ -392,26 +465,43 @@ async function cerrarVenta(from, contactId, conversation, datos) {
   }
 }
 
-// Busca el bloque [DATOS]{...}[/DATOS] en la respuesta de Claude
-function extraerDatos(respuesta) {
-  const patron = /\[DATOS\]([\s\S]*?)\[\/DATOS\]/;
-  const encontrado = respuesta.match(patron);
+// Busca los bloques [DATOS]{...}[/DATOS] y [FOTO:modelo|color] en la respuesta
+function extraerMarcas(respuesta) {
+  let texto = respuesta;
+  const fotos = [];
 
-  // El bloque nunca debe llegarle al cliente
-  const textoLimpio = respuesta.replace(patron, '').trim();
+  // --- Fotos ---
+  const patronFoto = /\[FOTO:([^\]]+)\]/g;
+  let m;
+  while ((m = patronFoto.exec(respuesta)) !== null) {
+    const contenido = m[1].trim();
 
-  if (!encontrado) return { datos: null, textoLimpio };
+    if (contenido.toLowerCase() === 'lista') {
+      fotos.push({ tipo: 'lista' });
+    } else {
+      const [modelo, color] = contenido.split('|').map(s => (s || '').trim());
+      if (modelo) fotos.push({ tipo: 'modelo', modelo, color: color || null });
+    }
+  }
+  texto = texto.replace(patronFoto, '').trim();
+
+  // --- Datos del pedido ---
+  const patronDatos = /\[DATOS\]([\s\S]*?)\[\/DATOS\]/;
+  const encontrado = texto.match(patronDatos);
+  const textoLimpio = texto.replace(patronDatos, '').trim();
+
+  if (!encontrado) return { datos: null, fotos, textoLimpio };
 
   try {
     const datos = JSON.parse(encontrado[1].trim());
     if (!datos.nombre || !datos.direccion) {
       console.log('⚠️ Bloque DATOS incompleto, se ignora');
-      return { datos: null, textoLimpio };
+      return { datos: null, fotos, textoLimpio };
     }
-    return { datos, textoLimpio };
+    return { datos, fotos, textoLimpio };
   } catch (err) {
     console.error('⚠️ Bloque DATOS mal formado:', err.message);
-    return { datos: null, textoLimpio };
+    return { datos: null, fotos, textoLimpio };
   }
 }
 
@@ -621,10 +711,28 @@ async function getHistory(conversationId) {
 // ---------------------------------------------------------------
 
 async function sendMessage(to, body) {
+  return enviarAMeta(to, {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'text',
+    text: { body: body }
+  }, 'texto');
+}
+
+async function sendImage(to, imageUrl) {
+  return enviarAMeta(to, {
+    messaging_product: 'whatsapp',
+    to: to,
+    type: 'image',
+    image: { link: imageUrl }
+  }, 'imagen');
+}
+
+async function enviarAMeta(to, cuerpo, tipo) {
   try {
     const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
 
-    console.log(`📲 Enviando a ${to}`);
+    console.log(`📲 Enviando ${tipo} a ${to}`);
 
     const res = await fetch(url, {
       method: 'POST',
@@ -632,23 +740,18 @@ async function sendMessage(to, body) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${META_ACCESS_TOKEN}`
       },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: to,
-        type: 'text',
-        text: { body: body }
-      })
+      body: JSON.stringify(cuerpo)
     });
 
     const data = await res.json();
 
     if (data.messages) {
-      console.log(`✅ Mensaje enviado a ${to}`);
+      console.log(`✅ ${tipo} enviado a ${to}`);
     } else {
-      console.error(`❌ Error Meta al enviar a ${to}:`, JSON.stringify(data));
+      console.error(`❌ Error Meta al enviar ${tipo} a ${to}:`, JSON.stringify(data));
     }
   } catch (error) {
-    console.error('❌ Error sendMessage:', error);
+    console.error(`❌ Error enviando ${tipo}:`, error);
   }
 }
 
