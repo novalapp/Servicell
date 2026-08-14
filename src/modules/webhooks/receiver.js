@@ -24,8 +24,8 @@ const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
 
 // Horarios de atención, en minutos desde medianoche (hora de Colombia)
 // 9:30am = 570 · 10am = 600 · 4pm = 960 · 7pm = 1140
-const HORARIO_SEMANA  = { apertura: 570,  cierre: 1140 }; // lunes a sábado
-const HORARIO_DOMINGO = { apertura: 600,  cierre: 960 };  // domingos y festivos
+const HORARIO_SEMANA  = { apertura: 570, cierre: 1140 }; // lunes a sábado
+const HORARIO_DOMINGO = { apertura: 600, cierre: 960 };  // domingos y festivos
 
 // Deja de decir "ya te escriben" este número de minutos antes del cierre
 const MARGEN_CIERRE_MIN = 30;
@@ -95,7 +95,6 @@ router.post('/webhook', async (req, res) => {
 // HORARIO
 // ---------------------------------------------------------------
 
-// Hora actual en Colombia, sin importar dónde esté el servidor
 function ahoraColombia() {
   const partes = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Bogota',
@@ -112,7 +111,7 @@ function ahoraColombia() {
   };
 }
 
-// Info del día en Colombia. offsetDias = 0 hoy, 1 mañana
+// offsetDias = 0 hoy, 1 mañana
 function infoDia(offsetDias) {
   const fecha = new Date(Date.now() + offsetDias * 86400000);
 
@@ -139,7 +138,7 @@ function horarioDe(offsetDias) {
   return comoDomingo ? HORARIO_DOMINGO : HORARIO_SEMANA;
 }
 
-// Convierte 570 -> "9:30am", 600 -> "10am", 960 -> "4pm"
+// 570 -> "9:30am" · 600 -> "10am" · 960 -> "4pm"
 function formatHora(minutos) {
   const h24 = Math.floor(minutos / 60);
   const m = minutos % 60;
@@ -148,7 +147,6 @@ function formatHora(minutos) {
   return m === 0 ? `${h12}${sufijo}` : `${h12}:${String(m).padStart(2, '0')}${sufijo}`;
 }
 
-// { estado: 'abierto' | 'temprano' | 'cerrado', apertura: minutos }
 function estadoAtencion() {
   const { hora, minuto } = ahoraColombia();
   const ahora = hora * 60 + minuto;
@@ -165,7 +163,6 @@ function estadoAtencion() {
   return { estado: 'abierto', apertura: hoy.apertura };
 }
 
-// "hoy", "ayer", "hace 3 días"
 function haceCuanto(fechaISO) {
   if (!fechaISO) return '';
 
@@ -182,7 +179,6 @@ function haceCuanto(fechaISO) {
 // ---------------------------------------------------------------
 
 async function handleMessage(from, text) {
-  // Si escribe la asesora, se le atiende aparte
   if (from === AGENT_PHONE) {
     await handleAgente(text);
     return;
@@ -195,12 +191,10 @@ async function handleMessage(from, text) {
   console.log('⏳ Esperando 2 segundos...');
   await new Promise(resolve => setTimeout(resolve, 2000));
 
-  // --- BLOQUE BASE DE DATOS (si falla, el chat continúa) ---
   try {
     contactId = await getOrCreateContact(from);
     conversation = await getOrCreateConversation(contactId);
 
-    // Si ya está en manos de una persona, el bot se calla
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
       await saveMessage(conversation.id, contactId, 'contact', text);
@@ -217,7 +211,6 @@ async function handleMessage(from, text) {
     history = [];
   }
 
-  // --- BLOQUE RESPUESTA ---
   try {
     console.log('🤖 Llamando Claude...');
     const respuestaCruda = await generateResponse(text, CLIENT_ID, history);
@@ -252,6 +245,35 @@ async function handleMessage(from, text) {
 // IMÁGENES
 // ---------------------------------------------------------------
 
+// Quita tildes, pasa a minúsculas y unifica variantes conocidas.
+// Así "Titán Natural", "Titanio Natural" y "titan natural" son iguales.
+function normalizar(texto) {
+  if (!texto) return '';
+
+  return texto
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')   // quita tildes
+    .toLowerCase()
+    .replace(/titanio/g, 'titan')       // Titanio = Titán
+    .replace(/[^a-z0-9]/g, '');         // quita espacios y signos
+}
+
+// Puntaje de parecido entre lo que pidió la IA y lo que hay en la tabla.
+// 3 = idéntico · 2 = uno contiene al otro · 1 = comparten una palabra
+function parecido(buscado, candidato) {
+  const a = normalizar(buscado);
+  const b = normalizar(candidato);
+
+  if (!a || !b) return 0;
+  if (a === b) return 3;
+  if (a.includes(b) || b.includes(a)) return 2;
+
+  const palabrasA = buscado.toLowerCase().split(/\s+/).map(normalizar).filter(Boolean);
+  const palabrasB = candidato.toLowerCase().split(/\s+/).map(normalizar).filter(Boolean);
+
+  return palabrasA.some(p => p.length > 2 && palabrasB.includes(p)) ? 1 : 0;
+}
+
 async function enviarFotos(to, fotos) {
   for (const foto of fotos) {
     try {
@@ -259,10 +281,7 @@ async function enviarFotos(to, fotos) {
         ? await getListaPrecios()
         : await getFotoModelo(foto.modelo, foto.color);
 
-      if (!url) {
-        console.log(`📷 Sin foto para ${foto.modelo || 'lista'} ${foto.color || ''}`);
-        continue;
-      }
+      if (!url) continue;
 
       await sendImage(to, url);
     } catch (err) {
@@ -274,23 +293,66 @@ async function enviarFotos(to, fotos) {
 async function getFotoModelo(modelo, color) {
   if (!modelo) return null;
 
-  let consulta = supabase
+  // Trae todas las fotos del cliente y compara en memoria.
+  // Son pocas filas, y así toleramos variantes de escritura.
+  const { data, error } = await supabase
     .from('model_images')
-    .select('image_url')
+    .select('model, color, image_url')
     .eq('client_id', CLIENT_ID)
-    .eq('active', true)
-    .ilike('model', modelo);
-
-  if (color) consulta = consulta.ilike('color', color);
-
-  const { data, error } = await consulta.limit(1);
+    .eq('active', true);
 
   if (error) {
     console.error('⚠️ Error buscando foto:', error.message);
     return null;
   }
 
-  return data && data.length > 0 ? data[0].image_url : null;
+  if (!data || data.length === 0) {
+    console.log('📷 No hay fotos cargadas en model_images');
+    return null;
+  }
+
+  // 1. Filtrar por modelo, prefiriendo la coincidencia exacta.
+  // Así "iPhone 14 Pro" no se confunde con "iPhone 14 Pro Max".
+  let delModelo = data.filter(f => parecido(modelo, f.model) === 3);
+
+  if (delModelo.length === 0) {
+    delModelo = data.filter(f => parecido(modelo, f.model) === 2);
+    if (delModelo.length > 0) {
+      console.log(`📷 Modelo "${modelo}" resuelto como "${delModelo[0].model}"`);
+    }
+  }
+
+  if (delModelo.length === 0) {
+    console.log(`📷 Sin fotos del modelo "${modelo}"`);
+    return null;
+  }
+
+  // 2. Si no pidieron color, mandar la primera del modelo
+  if (!color) return delModelo[0].image_url;
+
+  // 3. Escoger el color más parecido
+  let mejor = null;
+  let mejorPuntaje = 0;
+
+  for (const fila of delModelo) {
+    const puntaje = parecido(color, fila.color);
+    if (puntaje > mejorPuntaje) {
+      mejorPuntaje = puntaje;
+      mejor = fila;
+    }
+  }
+
+  if (!mejor) {
+    const disponibles = delModelo.map(f => f.color).join(', ');
+    console.log(`📷 Sin foto para "${modelo}" color "${color}". Disponibles: ${disponibles}`);
+    return null;
+  }
+
+  if (mejorPuntaje < 3) {
+    console.log(`📷 Color "${color}" resuelto como "${mejor.color}" (parecido ${mejorPuntaje})`);
+  }
+
+  return mejor.image_url;
 }
 
 async function getListaPrecios() {
@@ -307,7 +369,12 @@ async function getListaPrecios() {
     return null;
   }
 
-  return data && data.length > 0 ? data[0].image_url : null;
+  if (!data || data.length === 0) {
+    console.log('📷 No hay lista de precios activa');
+    return null;
+  }
+
+  return data[0].image_url;
 }
 
 // ---------------------------------------------------------------
@@ -491,7 +558,6 @@ async function cerrarVenta(from, contactId, conversation, datos) {
   }
 }
 
-// Busca [DATOS]{...}[/DATOS] y [FOTO:modelo|color] en la respuesta
 function extraerMarcas(respuesta) {
   let texto = respuesta;
   const fotos = [];
@@ -509,6 +575,10 @@ function extraerMarcas(respuesta) {
     }
   }
   texto = texto.replace(patronFoto, '').trim();
+
+  if (fotos.length > 0) {
+    console.log(`🖼️ Marcas de foto encontradas: ${JSON.stringify(fotos)}`);
+  }
 
   const patronDatos = /\[DATOS\]([\s\S]*?)\[\/DATOS\]/;
   const encontrado = texto.match(patronDatos);
