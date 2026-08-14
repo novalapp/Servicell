@@ -18,9 +18,9 @@ const CLIENT_ID = 'c37d2508-c9d1-422d-9fef-23901bc51145';
 const CHANNEL_ID = '18e8df74-2ed5-415b-ac84-2b043eebac7b';
 
 // Agente que recibe los casos de pago
-const AGENT_PHONE = '573207679813';   // con 57 al inicio, sin espacios
-const AGENT_NAME = 'Duván';
-const AGENT_DISPLAY = '320 767 9813'; // como se le muestra al cliente
+const AGENT_PHONE = '573227831687';   // con 57 al inicio, sin espacios
+const AGENT_NAME = 'Adriana';
+const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
 
 // Horario de atención (hora de Colombia)
 const HORA_APERTURA = 10;             // abre a las 10am todos los días
