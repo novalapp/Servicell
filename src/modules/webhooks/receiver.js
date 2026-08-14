@@ -17,18 +17,24 @@ const CLIENT_ID = 'c37d2508-c9d1-422d-9fef-23901bc51145';
 // ID del canal "Servicell WhatsApp" en la tabla channels
 const CHANNEL_ID = '18e8df74-2ed5-415b-ac84-2b043eebac7b';
 
-// Agente que recibe los casos de pago
+// Asesora que recibe los casos de pago
 const AGENT_PHONE = '573227831687';   // con 57 al inicio, sin espacios
 const AGENT_NAME = 'Adriana';
 const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
 
-// Horario de atención (hora de Colombia)
-const HORA_APERTURA = 10;             // abre a las 10am todos los días
-const HORA_CIERRE_SEMANA = 19;        // lunes a viernes cierra 7pm
-const HORA_CIERRE_FINDE = 17;         // sábados y domingos cierra 5pm
-const MARGEN_CIERRE_MIN = 30;         // deja de decir "ya te escriben" 30 min antes
+// Horarios de atención, en minutos desde medianoche (hora de Colombia)
+// 9:30am = 570 · 10am = 600 · 4pm = 960 · 7pm = 1140
+const HORARIO_SEMANA  = { apertura: 570,  cierre: 1140 }; // lunes a sábado
+const HORARIO_DOMINGO = { apertura: 600,  cierre: 960 };  // domingos y festivos
 
-// Palabras con las que el agente pide los casos pendientes
+// Deja de decir "ya te escriben" este número de minutos antes del cierre
+const MARGEN_CIERRE_MIN = 30;
+
+// Festivos colombianos, formato 'YYYY-MM-DD'.
+// Agrégalos aquí para que el bot los trate como domingo.
+const FESTIVOS = [];
+
+// Palabras con las que la asesora pide los casos pendientes
 const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
 
 // Cuántos mensajes anteriores se le pasan a Claude como contexto
@@ -89,43 +95,74 @@ router.post('/webhook', async (req, res) => {
 // HORARIO
 // ---------------------------------------------------------------
 
-// Devuelve la hora actual en Colombia, sin importar dónde esté el servidor
+// Hora actual en Colombia, sin importar dónde esté el servidor
 function ahoraColombia() {
   const partes = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Bogota',
     hour: 'numeric',
     minute: 'numeric',
-    weekday: 'short',
     hour12: false
   }).formatToParts(new Date());
 
   const valor = tipo => partes.find(p => p.type === tipo)?.value;
 
+  return {
+    hora: parseInt(valor('hour'), 10) % 24,
+    minuto: parseInt(valor('minute'), 10)
+  };
+}
+
+// Info del día en Colombia. offsetDias = 0 hoy, 1 mañana
+function infoDia(offsetDias) {
+  const fecha = new Date(Date.now() + offsetDias * 86400000);
+
+  const partes = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Bogota',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short'
+  }).formatToParts(fecha);
+
+  const valor = tipo => partes.find(p => p.type === tipo)?.value;
   const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
   return {
-    hora: parseInt(valor('hour'), 10) % 24,
-    minuto: parseInt(valor('minute'), 10),
+    fecha: `${valor('year')}-${valor('month')}-${valor('day')}`,
     dia: dias[valor('weekday')]
   };
 }
 
-// 'abierto'  → el agente puede escribir en minutos
-// 'temprano' → todavía no abren, pero abren HOY
-// 'cerrado'  → ya cerraron, atienden MAÑANA
+function horarioDe(offsetDias) {
+  const { fecha, dia } = infoDia(offsetDias);
+  const comoDomingo = (dia === 0) || FESTIVOS.includes(fecha);
+  return comoDomingo ? HORARIO_DOMINGO : HORARIO_SEMANA;
+}
+
+// Convierte 570 -> "9:30am", 600 -> "10am", 960 -> "4pm"
+function formatHora(minutos) {
+  const h24 = Math.floor(minutos / 60);
+  const m = minutos % 60;
+  const sufijo = h24 >= 12 ? 'pm' : 'am';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return m === 0 ? `${h12}${sufijo}` : `${h12}:${String(m).padStart(2, '0')}${sufijo}`;
+}
+
+// { estado: 'abierto' | 'temprano' | 'cerrado', apertura: minutos }
 function estadoAtencion() {
-  const { hora, minuto, dia } = ahoraColombia();
+  const { hora, minuto } = ahoraColombia();
+  const ahora = hora * 60 + minuto;
+  const hoy = horarioDe(0);
 
-  const esFinde = (dia === 0 || dia === 6);
-  const horaCierre = esFinde ? HORA_CIERRE_FINDE : HORA_CIERRE_SEMANA;
+  if (ahora < hoy.apertura) {
+    return { estado: 'temprano', apertura: hoy.apertura };
+  }
 
-  const minutosAhora = hora * 60 + minuto;
-  const minutosApertura = HORA_APERTURA * 60;
-  const minutosCierre = horaCierre * 60 - MARGEN_CIERRE_MIN;
+  if (ahora >= hoy.cierre - MARGEN_CIERRE_MIN) {
+    return { estado: 'cerrado', apertura: horarioDe(1).apertura };
+  }
 
-  if (minutosAhora < minutosApertura) return 'temprano';
-  if (minutosAhora >= minutosCierre) return 'cerrado';
-  return 'abierto';
+  return { estado: 'abierto', apertura: hoy.apertura };
 }
 
 // "hoy", "ayer", "hace 3 días"
@@ -145,7 +182,7 @@ function haceCuanto(fechaISO) {
 // ---------------------------------------------------------------
 
 async function handleMessage(from, text) {
-  // Si escribe el agente, se le atiende aparte
+  // Si escribe la asesora, se le atiende aparte
   if (from === AGENT_PHONE) {
     await handleAgente(text);
     return;
@@ -165,7 +202,7 @@ async function handleMessage(from, text) {
 
     // Si ya está en manos de una persona, el bot se calla
     if (conversation.handled_by === 'human') {
-      console.log('🤐 Conversación en manos del agente, el bot no responde');
+      console.log('🤐 Conversación en manos de la asesora, el bot no responde');
       await saveMessage(conversation.id, contactId, 'contact', text);
       await sendMessage(from, mensajeYaEstaConVentas());
       return;
@@ -193,7 +230,6 @@ async function handleMessage(from, text) {
       return;
     }
 
-    // Enviar fotos si Claude las pidió
     if (fotos.length > 0) {
       await enviarFotos(from, fotos);
     }
@@ -219,13 +255,9 @@ async function handleMessage(from, text) {
 async function enviarFotos(to, fotos) {
   for (const foto of fotos) {
     try {
-      let url = null;
-
-      if (foto.tipo === 'lista') {
-        url = await getListaPrecios();
-      } else {
-        url = await getFotoModelo(foto.modelo, foto.color);
-      }
+      const url = (foto.tipo === 'lista')
+        ? await getListaPrecios()
+        : await getFotoModelo(foto.modelo, foto.color);
 
       if (!url) {
         console.log(`📷 Sin foto para ${foto.modelo || 'lista'} ${foto.color || ''}`);
@@ -279,13 +311,12 @@ async function getListaPrecios() {
 }
 
 // ---------------------------------------------------------------
-// CUANDO ESCRIBE EL AGENTE
+// CUANDO ESCRIBE LA ASESORA
 // ---------------------------------------------------------------
 
 async function handleAgente(text) {
   const limpio = text.trim().toLowerCase();
 
-  // ¿Está confirmando un cierre?
   if (cierrePendiente) {
     if (limpio === 'si' || limpio === 'sí') {
       await confirmarCierre();
@@ -299,17 +330,15 @@ async function handleAgente(text) {
     cierrePendiente = null;
   }
 
-  // ¿Pide cerrar un caso? -> "cerrar 1"
   const pideCerrar = limpio.match(/^cerrar\s+(\d+)$/);
   if (pideCerrar) {
     await pedirConfirmacionCierre(parseInt(pideCerrar[1], 10));
     return;
   }
 
-  // ¿Pide la lista de casos?
   const pideCasos = PALABRAS_CASOS.some(p => limpio === p || limpio.startsWith(p + ' '));
   if (pideCasos) {
-    console.log('📋 El agente pidió los casos pendientes');
+    console.log('📋 La asesora pidió los casos pendientes');
     try {
       const casos = await getCasosPendientes();
       await sendMessage(AGENT_PHONE, mensajeCasos(casos));
@@ -320,7 +349,7 @@ async function handleAgente(text) {
     return;
   }
 
-  console.log('👔 Mensaje del agente sin comando, se ignora');
+  console.log('👔 Mensaje de la asesora sin comando, se ignora');
 }
 
 async function pedirConfirmacionCierre(numero) {
@@ -427,22 +456,19 @@ Para cerrar uno escribe: cerrar 1`;
 // ---------------------------------------------------------------
 
 async function cerrarVenta(from, contactId, conversation, datos) {
-  const estado = estadoAtencion();
-  console.log(`🕐 Estado de atención: ${estado}`);
+  const atencion = estadoAtencion();
+  console.log(`🕐 Estado de atención: ${atencion.estado}`);
 
-  // 1. Mensaje al cliente (siempre, aunque falle lo demás)
-  const mensajeCliente = mensajeTraspaso(datos, estado);
+  const mensajeCliente = mensajeTraspaso(datos, atencion);
   await sendMessage(from, mensajeCliente);
 
-  // 2. Aviso al agente
   try {
     await sendMessage(AGENT_PHONE, mensajeAgente(from, datos));
-    console.log(`🔔 Aviso enviado al agente ${AGENT_NAME}`);
+    console.log(`🔔 Aviso enviado a ${AGENT_NAME}`);
   } catch (err) {
-    console.error('⚠️ NO SE PUDO AVISAR AL AGENTE:', err.message);
+    console.error('⚠️ NO SE PUDO AVISAR A LA ASESORA:', err.message);
   }
 
-  // 3. Guardar todo
   if (!conversation || !contactId) return;
 
   try {
@@ -459,18 +485,17 @@ async function cerrarVenta(from, contactId, conversation, datos) {
       .eq('id', conversation.id);
 
     await saveMessage(conversation.id, contactId, 'agent', mensajeCliente);
-    console.log('✅ Conversación traspasada al agente');
+    console.log('✅ Conversación traspasada a la asesora');
   } catch (err) {
     console.error('⚠️ Error guardando el traspaso:', err.message);
   }
 }
 
-// Busca los bloques [DATOS]{...}[/DATOS] y [FOTO:modelo|color] en la respuesta
+// Busca [DATOS]{...}[/DATOS] y [FOTO:modelo|color] en la respuesta
 function extraerMarcas(respuesta) {
   let texto = respuesta;
   const fotos = [];
 
-  // --- Fotos ---
   const patronFoto = /\[FOTO:([^\]]+)\]/g;
   let m;
   while ((m = patronFoto.exec(respuesta)) !== null) {
@@ -485,7 +510,6 @@ function extraerMarcas(respuesta) {
   }
   texto = texto.replace(patronFoto, '').trim();
 
-  // --- Datos del pedido ---
   const patronDatos = /\[DATOS\]([\s\S]*?)\[\/DATOS\]/;
   const encontrado = texto.match(patronDatos);
   const textoLimpio = texto.replace(patronDatos, '').trim();
@@ -534,22 +558,23 @@ async function guardarDatosEnvio(contactId, datos) {
 // TEXTOS
 // ---------------------------------------------------------------
 
-function mensajeTraspaso(datos, estado) {
+function mensajeTraspaso(datos, atencion) {
   const resumen = `📱 ${datos.pedido || 'Tu pedido'}${datos.total ? ` — ${datos.total}` : ''}
 📍 ${datos.direccion || ''}${datos.ciudad ? `, ${datos.ciudad}` : ''}
 💳 ${datos.medio_pago || 'Por definir'}`;
 
   let cuando;
-  if (estado === 'abierto') {
-    cuando = `En unos minutos te escribe *${AGENT_NAME}*, de nuestra área de ventas, desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
-  } else {
-    const dia = (estado === 'temprano') ? 'hoy' : 'mañana';
-    cuando = `Como estamos fuera del horario de atención, nuestro asesor del área de ventas te escribirá *${dia} a partir de las ${HORA_APERTURA}am*. Se llama *${AGENT_NAME}* y te escribe desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
-  }
+  let cierre;
 
-  const cierre = (estado === 'abierto')
-    ? '¡Gracias por tu compra! Quedas atento que ya te escribe 🙌'
-    : '¡Gracias por tu compra! Quedas atento a su mensaje 🙌';
+  if (atencion.estado === 'abierto') {
+    cuando = `En unos minutos te escribe *${AGENT_NAME}*, de nuestra área de ventas, desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
+    cierre = '¡Gracias por tu compra! Quedas atento que ya te escribe 🙌';
+  } else {
+    const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
+    const hora = formatHora(atencion.apertura);
+    cuando = `Como estamos fuera del horario de atención, nuestra asesora te escribirá *${dia} a partir de las ${hora}*. Se llama *${AGENT_NAME}* y te escribe desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
+    cierre = '¡Gracias por tu compra! Quedas atento a su mensaje 🙌';
+  }
 
   return `¡Perfecto! Tu pedido ya quedó registrado:
 
@@ -557,7 +582,7 @@ ${resumen}
 
 ${cuando}
 
-Él ya tiene todos tus datos, así que te da la información de pago y te confirma el envío.
+Ella ya tiene todos tus datos, así que te da la información de pago y te confirma el envío.
 
 ${cierre}`;
 }
@@ -575,16 +600,18 @@ function mensajeAgente(telefonoCliente, datos) {
 }
 
 function mensajeYaEstaConVentas() {
-  const estado = estadoAtencion();
+  const atencion = estadoAtencion();
 
-  if (estado === 'abierto') {
+  if (atencion.estado === 'abierto') {
     return `Ya estás con nuestra área de ventas 😊 ${AGENT_NAME} te ayuda por ese chat con el pago y el envío.
 
-Si aún no te ha escrito, puedes buscarlo en el ${AGENT_DISPLAY}.`;
+Si aún no te ha escrito, puedes buscarla en el ${AGENT_DISPLAY}.`;
   }
 
-  const dia = (estado === 'temprano') ? 'hoy' : 'mañana';
-  return `Tu pedido ya quedó registrado 😊 ${AGENT_NAME}, de nuestra área de ventas, te escribe ${dia} a partir de las ${HORA_APERTURA}am desde el ${AGENT_DISPLAY}.`;
+  const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
+  const hora = formatHora(atencion.apertura);
+
+  return `Tu pedido ya quedó registrado 😊 ${AGENT_NAME}, de nuestra área de ventas, te escribe ${dia} a partir de las ${hora} desde el ${AGENT_DISPLAY}.`;
 }
 
 // ---------------------------------------------------------------
