@@ -76,6 +76,7 @@ router.post('/webhook', async (req, res) => {
 
       if (value.messages && value.messages.length > 0) {
         const message = value.messages[0];
+        console.log('🔍 MENSAJE COMPLETO:', JSON.stringify(message));
         const from = message.from;
         const text = message.text?.body || '';
 
