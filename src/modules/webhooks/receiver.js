@@ -79,6 +79,16 @@ router.post('/webhook', async (req, res) => {
         }
 
         const text = message.text?.body || '';
+
+        // El bot solo entiende texto: nota de voz, foto, sticker, etc.
+        if (message.type !== 'text') {
+          console.log(`🎙️ Mensaje tipo "${message.type}" de ${destino}`);
+          responderNoTexto(destino, message.type).catch(err => {
+            console.error('Error respondiendo a no-texto:', err);
+          });
+          return;
+        }
+
         console.log(`📱 Mensaje de ${destino}: ${text}`);
 
         handleMessage(destino, text).catch(err => {
@@ -190,6 +200,29 @@ function haceCuanto(fechaISO) {
 // ---------------------------------------------------------------
 // FLUJO PRINCIPAL
 // ---------------------------------------------------------------
+
+// Responde cuando llega algo que no es texto (audio, foto, sticker...)
+async function responderNoTexto(destino, tipo) {
+  try {
+    const contactId = await getOrCreateContact(destino);
+    const conversation = await getOrCreateConversation(contactId);
+
+    if (conversation.handled_by === 'human') {
+      console.log('🤐 Conversación con la asesora, no se responde');
+      return;
+    }
+  } catch (err) {
+    console.error('⚠️ No pude verificar la conversación:', err.message);
+  }
+
+  const esAudio = (tipo === 'audio' || tipo === 'voice');
+
+  const texto = esAudio
+    ? '¡Hola! 😊 Disculpa, por acá no puedo escuchar las notas de voz. ¿Me lo puedes escribir?'
+    : 'Disculpa, no puedo abrir ese archivo por acá 🙈 ¿Me cuentas por escrito qué necesitas?';
+
+  await sendMessage(destino, texto);
+}
 
 async function handleMessage(destino, text) {
   if (destino === AGENT_PHONE) {
