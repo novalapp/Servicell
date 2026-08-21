@@ -80,7 +80,17 @@ router.post('/webhook', async (req, res) => {
 
         const text = message.text?.body || '';
 
-        // El bot solo entiende texto: nota de voz, foto, sticker, etc.
+        // Las fotos sí las puede ver la IA
+        if (message.type === 'image') {
+          const pie = message.image?.caption || '';
+          console.log(`🖼️ Foto recibida de ${destino}`);
+          handleMessage(destino, pie, message.image?.id).catch(err => {
+            console.error('Error en handleMessage:', err);
+          });
+          return;
+        }
+
+        // Lo demás (audio, sticker, video, documento) no se puede procesar
         if (message.type !== 'text') {
           console.log(`🎙️ Mensaje tipo "${message.type}" de ${destino}`);
           responderNoTexto(destino, message.type).catch(err => {
@@ -224,7 +234,31 @@ async function responderNoTexto(destino, tipo) {
   await sendMessage(destino, texto);
 }
 
-async function handleMessage(destino, text) {
+// Descarga una foto de WhatsApp y la deja lista para la IA
+async function descargarImagen(mediaId) {
+  const cabeceras = { Authorization: `Bearer ${META_ACCESS_TOKEN}` };
+
+  // 1. Pedirle a Meta la URL temporal del archivo
+  const infoRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, { headers: cabeceras });
+  const info = await infoRes.json();
+
+  if (!info.url) throw new Error(`Meta no dio URL: ${JSON.stringify(info)}`);
+
+  const permitidos = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  if (!permitidos.includes(info.mime_type)) {
+    throw new Error(`formato no soportado: ${info.mime_type}`);
+  }
+
+  // 2. Descargar el archivo
+  const binRes = await fetch(info.url, { headers: cabeceras });
+  const buffer = Buffer.from(await binRes.arrayBuffer());
+
+  if (buffer.length > 4500000) throw new Error('la foto pesa demasiado');
+
+  return { base64: buffer.toString('base64'), mime: info.mime_type };
+}
+
+async function handleMessage(destino, text, imagenId = null) {
   if (destino === AGENT_PHONE) {
     await handleAgente(text);
     return;
@@ -233,6 +267,26 @@ async function handleMessage(destino, text) {
   let contactId = null;
   let conversation = null;
   let history = [];
+
+  // Si viene foto, la descargamos y se la pasamos a la IA
+  let contenidoUsuario = text;
+  let textoParaGuardar = text;
+
+  if (imagenId) {
+    try {
+      const img = await descargarImagen(imagenId);
+      contenidoUsuario = [
+        { type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } },
+        { type: 'text', text: text || '¿Qué me puedes decir de esta foto?' }
+      ];
+      textoParaGuardar = text ? `[foto] ${text}` : '[el cliente envió una foto]';
+      console.log('📷 Foto descargada y lista para la IA');
+    } catch (err) {
+      console.error('⚠️ No pude descargar la foto:', err.message);
+      await sendMessage(destino, 'Disculpa, no pude abrir esa foto 🙈 ¿Me la puedes reenviar o contarme por escrito qué necesitas?');
+      return;
+    }
+  }
 
   console.log('⏳ Esperando 2 segundos...');
   await new Promise(resolve => setTimeout(resolve, 2000));
@@ -243,7 +297,7 @@ async function handleMessage(destino, text) {
 
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
-      await saveMessage(conversation.id, contactId, 'contact', text);
+      await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
       await sendMessage(destino, mensajeYaEstaConVentas());
       return;
     }
@@ -251,7 +305,7 @@ async function handleMessage(destino, text) {
     history = await getHistory(conversation.id);
     console.log(`📚 Historial recuperado: ${history.length} mensajes`);
 
-    await saveMessage(conversation.id, contactId, 'contact', text);
+    await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
   } catch (dbError) {
     console.error('⚠️ Error de base de datos (el chat continúa):', dbError.message);
     history = [];
@@ -259,7 +313,7 @@ async function handleMessage(destino, text) {
 
   try {
     console.log('🤖 Llamando Claude...');
-    const respuestaCruda = await generateResponse(text, CLIENT_ID, history);
+    const respuestaCruda = await generateResponse(contenidoUsuario, CLIENT_ID, history);
 
     const { datos, fotos, textoLimpio } = extraerMarcas(respuestaCruda);
 
