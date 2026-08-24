@@ -24,11 +24,35 @@ async function getAgentConfig(clientId) {
   return data[0];
 }
 
+// De ["90%", "95%", ">90%"] devuelve "95%" — la más alta.
+// Si no hay nada, devuelve null.
+function bateriaMasAlta(unidades) {
+  if (!Array.isArray(unidades) || unidades.length === 0) return null;
+
+  let mejorTexto = null;
+  let mejorValor = -1;
+
+  for (const u of unidades) {
+    const texto = String(u || "").trim();
+    if (!texto) continue;
+
+    const numero = parseFloat(texto.replace(/[^\d.]/g, ""));
+    if (isNaN(numero)) continue;
+
+    if (numero > mejorValor) {
+      mejorValor = numero;
+      mejorTexto = texto;
+    }
+  }
+
+  return mejorTexto;
+}
+
 // Get products for a client
 async function getProductsInfo(clientId) {
   const { data, error } = await supabase
     .from("products")
-    .select("name, sku, category, price, stock, capacity, color, battery_status")
+    .select("name, sku, category, price, stock, capacity, color, battery_units")
     .eq("client_id", clientId)
     .eq("active", true)
     .order("name");
@@ -42,7 +66,6 @@ async function getProductsInfo(clientId) {
     return "No products available";
   }
 
-  // Format products for the prompt
   const productsByCategory = {};
 
   data.forEach(product => {
@@ -52,17 +75,14 @@ async function getProductsInfo(clientId) {
 
     const stock = product.stock > 0 ? `${product.stock} en stock` : "Agotado";
 
-    // Capacidad y color, si existen
     const detalles = [product.capacity, product.color].filter(Boolean).join(" ");
     const detallesTexto = detalles ? ` ${detalles}` : "";
 
-    // Estado de batería, si existe
-    const bateria = product.battery_status
-      ? ` | Batería: ${product.battery_status}`
-      : "";
+    const bateria = bateriaMasAlta(product.battery_units);
+    const bateriaTexto = bateria ? ` | Batería: ${bateria}` : "";
 
     productsByCategory[product.category].push(
-      `- ${product.name}${detallesTexto} (${product.sku}): $${product.price.toLocaleString('es-CO')} COP - ${stock}${bateria}`
+      `- ${product.name}${detallesTexto} (${product.sku}): $${product.price.toLocaleString('es-CO')} COP - ${stock}${bateriaTexto}`
     );
   });
 
@@ -103,14 +123,11 @@ async function getPromotionsInfo(clientId) {
 // Generate AI response for a message
 async function generateResponse(messageContent, clientId, conversationHistory = []) {
   try {
-    // Get agent config
     const config = await getAgentConfig(clientId);
 
-    // Get current products and promotions
     const productsInfo = await getProductsInfo(clientId);
     const promotionsInfo = await getPromotionsInfo(clientId);
 
-    // Build the complete system prompt
     const completeSystemPrompt = `${config.system_prompt}
 
 ${productsInfo}
@@ -118,14 +135,14 @@ ${promotionsInfo}
 
 INSTRUCCIONES IMPORTANTES:
 - Siempre consulta el inventario antes de confirmar disponibilidad
-- El inventario incluye el estado de batería de cada equipo. Si el cliente
-  pregunta por la batería, dale el dato exacto de ese equipo. Nunca lo inventes
-  ni des un porcentaje aproximado que no esté en el inventario.
-- Si un equipo no tiene dato de batería en el inventario, dile al cliente que
-  el asesor se lo confirma
+- El inventario incluye el estado de batería de cada equipo. Menciónalo
+  SOLO si el cliente pregunta. Da el dato exacto que aparece ahí, nunca
+  inventes un porcentaje ni des uno aproximado.
+- Si un equipo no tiene dato de batería en el inventario, dile al cliente
+  que el asesor se lo confirma
 - Si no hay stock, ofrece registrar al cliente para avisar cuando llegue
 - Nunca prometas fechas exactas de entrega sin verificar
-- Si el cliente pregunta por algo que no sabes, escala a Paula
+- Nunca le digas al cliente cuántas unidades hay en stock
 - Mantén un tono ${config.tone}
 - Responde en español`;
 
