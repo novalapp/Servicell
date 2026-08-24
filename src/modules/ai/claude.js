@@ -5,7 +5,86 @@ const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
-// Get agent configuration from Supabase
+// ---------------------------------------------------------------
+// COLORES — traducción automática
+// ---------------------------------------------------------------
+
+// Palabras que el cliente puede usar, agrupadas por familia.
+// Si hace falta agregar una, va aquí.
+const FAMILIAS_COLOR = {
+  claros:    ['plata', 'plateado', 'silver', 'blanco', 'white', 'gris', 'gray', 'grey', 'natural'],
+  oscuros:   ['negro', 'black', 'grafito', 'graphite', 'medianoche', 'midnight', 'espacial'],
+  dorados:   ['oro', 'dorado', 'dorada', 'gold', 'champan', 'champagne'],
+  azules:    ['azul', 'blue', 'sierra'],
+  naranjas:  ['naranja', 'orange', 'cobre', 'bronce'],
+  morados:   ['morado', 'morada', 'lila', 'purpura', 'violeta', 'purple', 'malva'],
+  rosados:   ['rosa', 'rosado', 'rosada', 'pink'],
+  verdes:    ['verde', 'green', 'pino'],
+  amarillos: ['amarillo', 'amarilla', 'yellow'],
+  rojos:     ['rojo', 'roja', 'red']
+};
+
+// Quita tildes y pasa a minúsculas, conservando los espacios
+function simplificar(texto) {
+  return String(texto || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+// A qué familia pertenece un color del inventario ("Titán Blanco" -> claros)
+function familiaDelColor(color) {
+  const c = simplificar(color);
+  for (const [familia, palabras] of Object.entries(FAMILIAS_COLOR)) {
+    if (palabras.some(p => c.includes(p))) return familia;
+  }
+  return null;
+}
+
+// Saca el texto del mensaje, venga como string o como bloques con imagen
+function textoDelMensaje(messageContent) {
+  if (typeof messageContent === 'string') return messageContent;
+  if (Array.isArray(messageContent)) {
+    return messageContent
+      .filter(b => b && b.type === 'text')
+      .map(b => b.text)
+      .join(' ');
+  }
+  return '';
+}
+
+// Si el cliente nombró un color, le dice a la IA cuál es el equivalente
+// exacto del inventario, para que no tenga que adivinarlo.
+function notaDeColor(mensaje, coloresInventario) {
+  const palabras = simplificar(mensaje).split(/[^a-z0-9]+/).filter(Boolean);
+  if (palabras.length === 0) return '';
+
+  const familiasPedidas = new Set();
+  for (const [familia, claves] of Object.entries(FAMILIAS_COLOR)) {
+    if (claves.some(k => palabras.includes(k))) familiasPedidas.add(familia);
+  }
+
+  if (familiasPedidas.size === 0) return '';
+
+  const equivalentes = coloresInventario.filter(color => {
+    const familia = familiaDelColor(color);
+    return familia && familiasPedidas.has(familia);
+  });
+
+  if (equivalentes.length === 0) return '';
+
+  return `
+NOTA AUTOMÁTICA SOBRE EL COLOR:
+El cliente nombró un color. En este inventario, ese color corresponde a: ${equivalentes.join(', ')}.
+Si el modelo que pide existe en el inventario, dile que SÍ lo tienes en ese color.
+Responde usando la palabra que usó el cliente, nunca el nombre del inventario.
+`;
+}
+
+// ---------------------------------------------------------------
+// CONFIGURACIÓN E INVENTARIO
+// ---------------------------------------------------------------
+
 async function getAgentConfig(clientId) {
   const { data, error } = await supabase
     .from("agent_config")
@@ -13,19 +92,13 @@ async function getAgentConfig(clientId) {
     .eq("client_id", clientId)
     .eq("active", true);
 
-  if (error) {
-    throw new Error(`Failed to fetch agent config: ${error.message}`);
-  }
-
-  if (!data || data.length === 0) {
-    throw new Error("Agent config not found for this client");
-  }
+  if (error) throw new Error(`Failed to fetch agent config: ${error.message}`);
+  if (!data || data.length === 0) throw new Error("Agent config not found for this client");
 
   return data[0];
 }
 
-// De ["90%", "95%", ">90%"] devuelve "95%" — la más alta.
-// Si no hay nada, devuelve null.
+// De ["90%", "95%"] devuelve "95%" — la más alta
 function bateriaMasAlta(unidades) {
   if (!Array.isArray(unidades) || unidades.length === 0) return null;
 
@@ -48,7 +121,7 @@ function bateriaMasAlta(unidades) {
   return mejorTexto;
 }
 
-// Get products for a client
+// Devuelve { texto, colores } — el inventario formateado y la lista de colores
 async function getProductsInfo(clientId) {
   const { data, error } = await supabase
     .from("products")
@@ -59,21 +132,24 @@ async function getProductsInfo(clientId) {
 
   if (error) {
     console.error("Error fetching products:", error);
-    return "";
+    return { texto: "", colores: [] };
   }
 
   if (!data || data.length === 0) {
-    return "No products available";
+    return { texto: "No products available", colores: [] };
   }
 
   const productsByCategory = {};
+  const colores = new Set();
 
   data.forEach(product => {
+    if (product.color) colores.add(product.color);
+
     if (!productsByCategory[product.category]) {
       productsByCategory[product.category] = [];
     }
 
-    const stock = product.stock > 0 ? `${product.stock} en stock` : "Agotado";
+    const stock = product.stock > 0 ? "Disponible" : "Agotado";
 
     const detalles = [product.capacity, product.color].filter(Boolean).join(" ");
     const detallesTexto = detalles ? ` ${detalles}` : "";
@@ -86,15 +162,14 @@ async function getProductsInfo(clientId) {
     );
   });
 
-  let productsInfo = "INVENTARIO ACTUAL:\n";
+  let texto = "INVENTARIO ACTUAL:\n";
   Object.entries(productsByCategory).forEach(([category, products]) => {
-    productsInfo += `\n${category}:\n${products.join("\n")}\n`;
+    texto += `\n${category}:\n${products.join("\n")}\n`;
   });
 
-  return productsInfo;
+  return { texto, colores: Array.from(colores) };
 }
 
-// Get active promotions
 async function getPromotionsInfo(clientId) {
   const now = new Date();
 
@@ -105,9 +180,7 @@ async function getPromotionsInfo(clientId) {
     .eq("active", true)
     .gt("valid_until", now.toISOString());
 
-  if (error || !data || data.length === 0) {
-    return "";
-  }
+  if (error || !data || data.length === 0) return "";
 
   let promotionsInfo = "\nPROMOCIONES VIGENTES:\n";
   data.forEach(promo => {
@@ -120,18 +193,26 @@ async function getPromotionsInfo(clientId) {
   return promotionsInfo;
 }
 
-// Generate AI response for a message
+// ---------------------------------------------------------------
+// RESPUESTA
+// ---------------------------------------------------------------
+
 async function generateResponse(messageContent, clientId, conversationHistory = []) {
   try {
     const config = await getAgentConfig(clientId);
 
-    const productsInfo = await getProductsInfo(clientId);
+    const inventario = await getProductsInfo(clientId);
     const promotionsInfo = await getPromotionsInfo(clientId);
+
+    // Traduce el color que dijo el cliente al del inventario
+    const nota = notaDeColor(textoDelMensaje(messageContent), inventario.colores);
+    if (nota) console.log('🎨 Nota de color agregada');
 
     const completeSystemPrompt = `${config.system_prompt}
 
-${productsInfo}
+${inventario.texto}
 ${promotionsInfo}
+${nota}
 
 INSTRUCCIONES IMPORTANTES:
 - Siempre consulta el inventario antes de confirmar disponibilidad
@@ -139,10 +220,10 @@ INSTRUCCIONES IMPORTANTES:
   SOLO si el cliente pregunta. Da el dato exacto que aparece ahí, nunca
   inventes un porcentaje ni des uno aproximado.
 - Si un equipo no tiene dato de batería en el inventario, dile al cliente
-  que el asesor se lo confirma
+  que la asesora se lo confirma
 - Si no hay stock, ofrece registrar al cliente para avisar cuando llegue
 - Nunca prometas fechas exactas de entrega sin verificar
-- Nunca le digas al cliente cuántas unidades hay en stock
+- Nunca le digas al cliente cuántas unidades hay disponibles
 - Mantén un tono ${config.tone}
 - Responde en español`;
 
