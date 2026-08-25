@@ -237,7 +237,7 @@ INSTRUCCIONES IMPORTANTES:
 
     const response = await client.messages.create({
       model: "claude-haiku-4-5",
-      max_tokens: 1024,
+      max_tokens: 1400,
       system: completeSystemPrompt,
       messages: messages,
     });

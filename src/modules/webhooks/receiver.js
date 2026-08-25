@@ -30,7 +30,7 @@ const MARGEN_CIERRE_MIN = 30;
 const FESTIVOS = [];
 
 const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
-const HISTORY_LIMIT = 10;
+const HISTORY_LIMIT = 6;
 
 let cierrePendiente = null;
 
@@ -228,7 +228,7 @@ async function responderNoTexto(destino, tipo) {
   const esAudio = (tipo === 'audio' || tipo === 'voice');
 
   const texto = esAudio
-    ? '¡Hola! 😊 Disculpa, por acá no puedo escuchar las notas de voz. ¿Me lo puedes escribir?'
+    ? 'Disculpa, en este momento no puedo escucharte 🙏 ¿Me lo puedes escribir, por favor? Gracias 😊'
     : 'Disculpa, no puedo abrir ese archivo por acá 🙈 ¿Me cuentas por escrito qué necesitas?';
 
   await sendMessage(destino, texto);
@@ -315,7 +315,12 @@ async function handleMessage(destino, text, imagenId = null) {
     console.log('🤖 Llamando Claude...');
     const respuestaCruda = await generateResponse(contenidoUsuario, CLIENT_ID, history);
 
-    const { datos, fotos, textoLimpio } = extraerMarcas(respuestaCruda);
+    const { datos, fotos, textoLimpio, motivoAsesora } = extraerMarcas(respuestaCruda);
+
+    // Reenviarle la foto a la asesora si la IA lo pidió
+    if (motivoAsesora && imagenId) {
+      await reenviarAsesora(imagenId, motivoAsesora, destino);
+    }
 
     if (datos) {
       console.log('🛒 Pedido completo detectado, iniciando traspaso');
@@ -659,6 +664,11 @@ function extraerMarcas(respuesta) {
   let texto = respuesta;
   const fotos = [];
 
+  // Marca para reenviarle la foto a la asesora
+  const paraAsesora = /\[ASESORA:([^\]]*)\]/.exec(respuesta);
+  const motivoAsesora = paraAsesora ? (paraAsesora[1].trim() || 'Revisar') : null;
+  texto = texto.replace(/\[ASESORA:[^\]]*\]/g, '').trim();
+
   const patronFoto = /\[FOTO:([^\]]+)\]/g;
   let m;
   while ((m = patronFoto.exec(respuesta)) !== null) {
@@ -681,18 +691,18 @@ function extraerMarcas(respuesta) {
   const encontrado = texto.match(patronDatos);
   const textoLimpio = texto.replace(patronDatos, '').trim();
 
-  if (!encontrado) return { datos: null, fotos, textoLimpio };
+  if (!encontrado) return { datos: null, fotos, textoLimpio, motivoAsesora };
 
   try {
     const datos = JSON.parse(encontrado[1].trim());
     if (!datos.nombre || !datos.direccion) {
       console.log('⚠️ Bloque DATOS incompleto, se ignora');
-      return { datos: null, fotos, textoLimpio };
+      return { datos: null, fotos, textoLimpio, motivoAsesora };
     }
-    return { datos, fotos, textoLimpio };
+    return { datos, fotos, textoLimpio, motivoAsesora };
   } catch (err) {
     console.error('⚠️ Bloque DATOS mal formado:', err.message);
-    return { datos: null, fotos, textoLimpio };
+    return { datos: null, fotos, textoLimpio, motivoAsesora };
   }
 }
 
@@ -908,6 +918,31 @@ async function getHistory(conversationId) {
 
 async function sendMessage(destino, body) {
   return enviarAMeta(destino, { type: 'text', text: { body: body } }, 'texto');
+}
+
+// Le reenvía a la asesora una foto con el contexto del cliente
+// motivo llega como "Asunto|Nombre|Pedido|Celular"
+async function reenviarAsesora(mediaId, motivo, destino) {
+  try {
+    const [asunto, nombre, pedido, celular] = String(motivo)
+      .split('|')
+      .map(s => (s || '').trim());
+
+    const wa = paraWaMe(celular || (esTelefono(destino) ? destino : null));
+
+    const lineas = [`📎 ${asunto || 'Revisar'}`];
+    if (nombre) lineas.push(`👤 ${nombre}`);
+    if (pedido) lineas.push(`🛒 ${pedido}`);
+    lineas.push(`📱 ${celular || 'sin celular'}`);
+    if (wa) lineas.push(`💬 wa.me/${wa}`);
+    lineas.push('\nRevisa la foto que sigue 👇');
+
+    await sendMessage(AGENT_PHONE, lineas.join('\n'));
+    await enviarAMeta(AGENT_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
+    console.log(`📤 Foto reenviada a ${AGENT_NAME}: ${asunto}`);
+  } catch (err) {
+    console.error('⚠️ No pude reenviar la foto a la asesora:', err.message);
+  }
 }
 
 async function sendImage(destino, imageUrl) {
