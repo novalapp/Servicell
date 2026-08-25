@@ -7,6 +7,9 @@ const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
+// Clave secreta que debe mandar el panel para poder intervenir
+const PANEL_KEY = process.env.PANEL_KEY;
+
 // ---------------------------------------------------------------
 // CONFIGURACIÓN — esto es lo único que hay que cambiar
 // ---------------------------------------------------------------
@@ -991,5 +994,85 @@ async function enviarAMeta(destino, contenido, tipo) {
     console.error(`❌ Error enviando ${tipo}:`, error);
   }
 }
+
+// ---------------------------------------------------------------
+// API PARA EL PANEL — intervenir una conversación
+// ---------------------------------------------------------------
+
+function panelAutorizado(req) {
+  const clave = req.get('x-panel-key');
+  return PANEL_KEY && clave === PANEL_KEY;
+}
+
+// POST /api/panel/enviar   { conversationId, texto }
+router.post('/api/panel/enviar', async (req, res) => {
+  if (!panelAutorizado(req)) return res.status(401).json({ error: 'No autorizado' });
+
+  const { conversationId, texto } = req.body || {};
+
+  if (!conversationId || !texto || !String(texto).trim()) {
+    return res.status(400).json({ error: 'Faltan conversationId o texto' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('id, contact_id, contacts(external_id)')
+      .eq('client_id', CLIENT_ID)
+      .eq('id', conversationId)
+      .limit(1);
+
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Conversación no encontrada' });
+    }
+
+    const conv = data[0];
+    const destino = conv.contacts?.external_id;
+
+    if (!destino) return res.status(400).json({ error: 'El contacto no tiene identificador' });
+
+    await sendMessage(destino, texto);
+    await saveMessage(conv.id, conv.contact_id, 'human', texto);
+
+    await supabase
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', conv.id);
+
+    console.log(`🧑‍💻 Mensaje manual enviado desde el panel a ${destino}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ Error en /api/panel/enviar:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/panel/modo   { conversationId, modo: 'human' | 'ai' }
+router.post('/api/panel/modo', async (req, res) => {
+  if (!panelAutorizado(req)) return res.status(401).json({ error: 'No autorizado' });
+
+  const { conversationId, modo } = req.body || {};
+
+  if (!conversationId || !['ai', 'human'].includes(modo)) {
+    return res.status(400).json({ error: "modo debe ser 'ai' o 'human'" });
+  }
+
+  try {
+    const { error } = await supabase
+      .from('conversations')
+      .update({ handled_by: modo, updated_at: new Date().toISOString() })
+      .eq('client_id', CLIENT_ID)
+      .eq('id', conversationId);
+
+    if (error) throw new Error(error.message);
+
+    console.log(`🎛️ Conversación ${conversationId} pasó a modo ${modo}`);
+    return res.json({ ok: true, modo });
+  } catch (err) {
+    console.error('❌ Error en /api/panel/modo:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;
