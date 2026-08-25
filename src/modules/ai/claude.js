@@ -5,12 +5,13 @@ const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
+const MODELO = "claude-haiku-4-5";
+const MAX_TOKENS = 700;
+
 // ---------------------------------------------------------------
 // COLORES — traducción automática
 // ---------------------------------------------------------------
 
-// Palabras que el cliente puede usar, agrupadas por familia.
-// Si hace falta agregar una, va aquí.
 const FAMILIAS_COLOR = {
   claros:    ['plata', 'plateado', 'silver', 'blanco', 'white', 'gris', 'gray', 'grey', 'natural'],
   oscuros:   ['negro', 'black', 'grafito', 'graphite', 'medianoche', 'midnight', 'espacial'],
@@ -24,7 +25,6 @@ const FAMILIAS_COLOR = {
   rojos:     ['rojo', 'roja', 'red']
 };
 
-// Quita tildes y pasa a minúsculas, conservando los espacios
 function simplificar(texto) {
   return String(texto || '')
     .normalize('NFD')
@@ -32,7 +32,6 @@ function simplificar(texto) {
     .toLowerCase();
 }
 
-// A qué familia pertenece un color del inventario ("Titán Blanco" -> claros)
 function familiaDelColor(color) {
   const c = simplificar(color);
   for (const [familia, palabras] of Object.entries(FAMILIAS_COLOR)) {
@@ -41,7 +40,6 @@ function familiaDelColor(color) {
   return null;
 }
 
-// Saca el texto del mensaje, venga como string o como bloques con imagen
 function textoDelMensaje(messageContent) {
   if (typeof messageContent === 'string') return messageContent;
   if (Array.isArray(messageContent)) {
@@ -53,8 +51,6 @@ function textoDelMensaje(messageContent) {
   return '';
 }
 
-// Si el cliente nombró un color, le dice a la IA cuál es el equivalente
-// exacto del inventario, para que no tenga que adivinarlo.
 function notaDeColor(mensaje, coloresInventario) {
   const palabras = simplificar(mensaje).split(/[^a-z0-9]+/).filter(Boolean);
   if (palabras.length === 0) return '';
@@ -73,12 +69,7 @@ function notaDeColor(mensaje, coloresInventario) {
 
   if (equivalentes.length === 0) return '';
 
-  return `
-NOTA AUTOMÁTICA SOBRE EL COLOR:
-El cliente nombró un color. En este inventario, ese color corresponde a: ${equivalentes.join(', ')}.
-Si el modelo que pide existe en el inventario, dile que SÍ lo tienes en ese color.
-Responde usando la palabra que usó el cliente, nunca el nombre del inventario.
-`;
+  return `NOTA SOBRE EL COLOR: el cliente nombró un color que en este inventario corresponde a: ${equivalentes.join(', ')}. Si el modelo existe, dile que SÍ lo tienes en ese color, usando la palabra del cliente.`;
 }
 
 // ---------------------------------------------------------------
@@ -98,7 +89,6 @@ async function getAgentConfig(clientId) {
   return data[0];
 }
 
-// De ["90%", "95%"] devuelve "95%" — la más alta
 function bateriaMasAlta(unidades) {
   if (!Array.isArray(unidades) || unidades.length === 0) return null;
 
@@ -121,11 +111,12 @@ function bateriaMasAlta(unidades) {
   return mejorTexto;
 }
 
-// Devuelve { texto, colores } — el inventario formateado y la lista de colores
+// Agrupa los productos iguales para que el inventario ocupe menos.
+// En vez de 3 líneas (una por color), manda 1 con los colores juntos.
 async function getProductsInfo(clientId) {
   const { data, error } = await supabase
     .from("products")
-    .select("name, sku, category, price, stock, capacity, color, battery_units")
+    .select("name, category, price, stock, capacity, color, battery_units")
     .eq("client_id", clientId)
     .eq("active", true)
     .order("name");
@@ -136,35 +127,54 @@ async function getProductsInfo(clientId) {
   }
 
   if (!data || data.length === 0) {
-    return { texto: "No products available", colores: [] };
+    return { texto: "Sin productos cargados", colores: [] };
   }
 
-  const productsByCategory = {};
   const colores = new Set();
+  const grupos = new Map();
 
-  data.forEach(product => {
-    if (product.color) colores.add(product.color);
+  data.forEach(p => {
+    if (p.color) colores.add(p.color);
 
-    if (!productsByCategory[product.category]) {
-      productsByCategory[product.category] = [];
+    const bateria = bateriaMasAlta(p.battery_units);
+    const hay = p.stock > 0;
+    const clave = `${p.category}|${p.name}|${p.capacity}|${p.price}|${hay}|${bateria || ''}`;
+
+    if (!grupos.has(clave)) {
+      grupos.set(clave, {
+        categoria: p.category,
+        nombre: p.name,
+        capacidad: p.capacity,
+        precio: p.price,
+        hay,
+        bateria,
+        colores: []
+      });
     }
 
-    const stock = product.stock > 0 ? "Disponible" : "Agotado";
-
-    const detalles = [product.capacity, product.color].filter(Boolean).join(" ");
-    const detallesTexto = detalles ? ` ${detalles}` : "";
-
-    const bateria = bateriaMasAlta(product.battery_units);
-    const bateriaTexto = bateria ? ` | Batería: ${bateria}` : "";
-
-    productsByCategory[product.category].push(
-      `- ${product.name}${detallesTexto} (${product.sku}): $${product.price.toLocaleString('es-CO')} COP - ${stock}${bateriaTexto}`
-    );
+    if (p.color) grupos.get(clave).colores.push(p.color);
   });
 
-  let texto = "INVENTARIO ACTUAL:\n";
-  Object.entries(productsByCategory).forEach(([category, products]) => {
-    texto += `\n${category}:\n${products.join("\n")}\n`;
+  const porCategoria = {};
+
+  for (const g of grupos.values()) {
+    const cat = g.categoria || 'Otros';
+    if (!porCategoria[cat]) porCategoria[cat] = [];
+
+    const partes = [g.nombre];
+    if (g.capacidad) partes.push(g.capacidad);
+    if (g.colores.length) partes.push(g.colores.join('/'));
+
+    const precio = `$${Number(g.precio).toLocaleString('es-CO')}`;
+    const estado = g.hay ? '' : ' AGOTADO';
+    const bat = g.bateria ? ` bat.${g.bateria}` : '';
+
+    porCategoria[cat].push(`${partes.join(' ')} ${precio}${bat}${estado}`);
+  }
+
+  let texto = "INVENTARIO:\n";
+  Object.entries(porCategoria).forEach(([cat, lineas]) => {
+    texto += `${cat}: ${lineas.join(' | ')}\n`;
   });
 
   return { texto, colores: Array.from(colores) };
@@ -182,15 +192,14 @@ async function getPromotionsInfo(clientId) {
 
   if (error || !data || data.length === 0) return "";
 
-  let promotionsInfo = "\nPROMOCIONES VIGENTES:\n";
-  data.forEach(promo => {
-    const discount = promo.discount_percentage
-      ? `${promo.discount_percentage}% de descuento`
-      : `Descuento de $${promo.discount_amount?.toLocaleString('es-CO')} COP`;
-    promotionsInfo += `- ${promo.title}: ${promo.description} (${discount})\n`;
+  const lineas = data.map(p => {
+    const desc = p.discount_percentage
+      ? `${p.discount_percentage}% dto`
+      : `$${p.discount_amount?.toLocaleString('es-CO')} dto`;
+    return `${p.title}: ${p.description} (${desc})`;
   });
 
-  return promotionsInfo;
+  return `\nPROMOCIONES: ${lineas.join(' | ')}\n`;
 }
 
 // ---------------------------------------------------------------
@@ -202,45 +211,44 @@ async function generateResponse(messageContent, clientId, conversationHistory = 
     const config = await getAgentConfig(clientId);
 
     const inventario = await getProductsInfo(clientId);
-    const promotionsInfo = await getPromotionsInfo(clientId);
+    const promociones = await getPromotionsInfo(clientId);
 
-    // Traduce el color que dijo el cliente al del inventario
+    // Esta parte es igual en todos los mensajes -> se puede cachear
+    const parteEstable = `${config.system_prompt}
+
+${inventario.texto}${promociones}
+
+REGLAS:
+- Consulta el inventario antes de confirmar disponibilidad
+- Menciona la batería SOLO si preguntan, con el dato exacto del inventario. Nunca la inventes.
+- Nunca digas cuántas unidades hay
+- No prometas fechas de entrega sin verificar
+- Tono ${config.tone}. Responde en español.`;
+
+    // Esta cambia en cada mensaje -> va aparte para no romper el caché
     const nota = notaDeColor(textoDelMensaje(messageContent), inventario.colores);
     if (nota) console.log('🎨 Nota de color agregada');
 
-    const completeSystemPrompt = `${config.system_prompt}
+    const system = [
+      { type: "text", text: parteEstable, cache_control: { type: "ephemeral" } }
+    ];
 
-${inventario.texto}
-${promotionsInfo}
-${nota}
-
-INSTRUCCIONES IMPORTANTES:
-- Siempre consulta el inventario antes de confirmar disponibilidad
-- El inventario incluye el estado de batería de cada equipo. Menciónalo
-  SOLO si el cliente pregunta. Da el dato exacto que aparece ahí, nunca
-  inventes un porcentaje ni des uno aproximado.
-- Si un equipo no tiene dato de batería en el inventario, dile al cliente
-  que la asesora se lo confirma
-- Si no hay stock, ofrece registrar al cliente para avisar cuando llegue
-- Nunca prometas fechas exactas de entrega sin verificar
-- Nunca le digas al cliente cuántas unidades hay disponibles
-- Mantén un tono ${config.tone}
-- Responde en español`;
+    if (nota) system.push({ type: "text", text: nota });
 
     const messages = [
       ...conversationHistory,
-      {
-        role: "user",
-        content: messageContent,
-      },
+      { role: "user", content: messageContent }
     ];
 
     const response = await client.messages.create({
-      model: "claude-haiku-4-5",
-      max_tokens: 1400,
-      system: completeSystemPrompt,
+      model: MODELO,
+      max_tokens: MAX_TOKENS,
+      system: system,
       messages: messages,
     });
+
+    const uso = response.usage || {};
+    console.log(`💰 Tokens — entrada:${uso.input_tokens || 0} caché_leído:${uso.cache_read_input_tokens || 0} caché_creado:${uso.cache_creation_input_tokens || 0} salida:${uso.output_tokens || 0}`);
 
     return response.content[0].text;
   } catch (error) {
