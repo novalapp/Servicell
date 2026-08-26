@@ -636,7 +636,23 @@ Para cerrar uno escribe: cerrar 1`;
 // ---------------------------------------------------------------
 // AVISOS A LA ASESORA (consultas, no ventas)
 // ---------------------------------------------------------------
-
+// Deja constancia en Supabase de cada aviso que se le manda a la asesora
+async function registrarAviso(tipo, contenido, conversationId, enviado, error) {
+  try {
+    await supabase.from('avisos_asesora').insert([{
+      client_id: CLIENT_ID,
+      conversation_id: conversationId || null,
+      tipo: tipo,
+      destinatario: AGENT_PHONE,
+      contenido: contenido,
+      enviado: enviado,
+      error: error || null
+    }]);
+    console.log(`📒 Aviso registrado (${tipo})`);
+  } catch (err) {
+    console.error('⚠️ No pude registrar el aviso:', err.message);
+  }
+}
 // Para no avisar diez veces del mismo cliente. Ventana de 6 horas.
 const VENTANA_AVISO_MS = 6 * 60 * 60 * 1000;
 const avisosRecientes = new Map();
@@ -710,8 +726,10 @@ async function avisarAsesora(motivo, destino, contactId, conversation) {
       lineas.push('⚠️ El cliente no dejó celular. Espera a que él escriba.');
     }
 
-    await sendMessage(AGENT_PHONE, lineas.join('\n'));
+    const textoAviso = lineas.join('\n');
+    await sendMessage(AGENT_PHONE, textoAviso);
     console.log(`🔔 Aviso de consulta enviado a ${AGENT_NAME}: ${asunto}`);
+    await registrarAviso('consulta', textoAviso, conversation?.id, true, null);
 
     const resumen = `Consulta: ${asunto || 'sin clasificar'}${nombre ? ` — ${nombre}` : ''}`;
     await marcarEsperandoAsesora(conversation, resumen);
@@ -767,11 +785,14 @@ async function cerrarVenta(destino, contactId, conversation, datos) {
   const mensajeCliente = mensajeTraspaso(datos, atencion);
   await sendMessage(destino, mensajeCliente);
 
+  const textoPedido = mensajeAgente(destino, datos);
   try {
-    await sendMessage(AGENT_PHONE, mensajeAgente(destino, datos));
+    await sendMessage(AGENT_PHONE, textoPedido);
     console.log(`🔔 Aviso enviado a ${AGENT_NAME}`);
+    await registrarAviso('pedido', textoPedido, conversation?.id, true, null);
   } catch (err) {
     console.error('⚠️ NO SE PUDO AVISAR A LA ASESORA:', err.message);
+    await registrarAviso('pedido', textoPedido, conversation?.id, false, err.message);
   }
 
   if (!conversation || !contactId) return;
@@ -1073,9 +1094,13 @@ async function reenviarAsesora(mediaId, motivo, destino) {
     if (wa) lineas.push(`💬 wa.me/${wa}`);
     lineas.push('\nRevisa la foto que sigue 👇');
 
-    await sendMessage(AGENT_PHONE, lineas.join('\n'));
+    const textoFoto = lineas.join('\n');
+    await sendMessage(AGENT_PHONE, textoFoto);
     await enviarAMeta(AGENT_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
     console.log(`📤 Foto reenviada a ${AGENT_NAME}: ${asunto}`);
+
+    const tipo = /preaprob/i.test(asunto) ? 'preaprobado' : 'comprobante';
+    await registrarAviso(tipo, textoFoto, null, true, null);
   } catch (err) {
     console.error('⚠️ No pude reenviar la foto a la asesora:', err.message);
   }
