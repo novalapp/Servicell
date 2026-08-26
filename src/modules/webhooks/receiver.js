@@ -320,9 +320,17 @@ async function handleMessage(destino, text, imagenId = null) {
 
     const { datos, fotos, textoLimpio, motivoAsesora } = extraerMarcas(respuestaCruda);
 
-    // Reenviarle la foto a la asesora si la IA lo pidió
-    if (motivoAsesora && imagenId) {
-      await reenviarAsesora(imagenId, motivoAsesora, destino);
+      // Avisar a la asesora si la IA lo pidió
+    if (motivoAsesora) {
+      if (imagenId) {
+        await reenviarAsesora(imagenId, motivoAsesora, destino);
+        avisoYaEnviado(destino);
+      } else if (puedeAvisar(destino)) {
+        await avisarAsesora(motivoAsesora, destino, contactId, conversation);
+        avisoYaEnviado(destino);
+      } else {
+        console.log('🔕 Aviso repetido del mismo cliente, se omite');
+      }
     }
 
     if (datos) {
@@ -338,6 +346,8 @@ async function handleMessage(destino, text, imagenId = null) {
     if (textoLimpio) {
       console.log(`✍️ Respuesta: ${textoLimpio}`);
       await sendMessage(destino, textoLimpio);
+
+      await redAsesora(textoLimpio, destino, contactId, conversation);
 
       if (conversation) {
         saveMessage(conversation.id, contactId, 'agent', textoLimpio)
@@ -624,8 +634,131 @@ Para cerrar uno escribe: cerrar 1`;
 }
 
 // ---------------------------------------------------------------
-// CIERRE DE VENTA Y TRASPASO
+// AVISOS A LA ASESORA (consultas, no ventas)
 // ---------------------------------------------------------------
+
+// Para no avisar diez veces del mismo cliente. Ventana de 6 horas.
+const VENTANA_AVISO_MS = 6 * 60 * 60 * 1000;
+const avisosRecientes = new Map();
+
+function puedeAvisar(destino) {
+  const ultimo = avisosRecientes.get(destino);
+  return !ultimo || (Date.now() - ultimo) > VENTANA_AVISO_MS;
+}
+
+function avisoYaEnviado(destino) {
+  avisosRecientes.set(destino, Date.now());
+  if (avisosRecientes.size > 500) {
+    for (const [k, t] of avisosRecientes) {
+      if (Date.now() - t > VENTANA_AVISO_MS) avisosRecientes.delete(k);
+    }
+  }
+}
+
+// Saca el nombre y el celular que ya tengamos guardados del cliente
+async function datosDelContacto(contactId) {
+  if (!contactId) return {};
+  try {
+    const { data, error } = await supabase
+      .from('contacts')
+      .select('display_name, external_id, metadata')
+      .eq('id', contactId)
+      .limit(1);
+
+    if (error || !data || data.length === 0) return {};
+
+    const c = data[0];
+    const meta = c.metadata || {};
+
+    // Al crear el contacto, display_name queda igual al identificador.
+    // Eso no es un nombre real.
+    const nombre = (c.display_name && c.display_name !== c.external_id)
+      ? c.display_name
+      : null;
+
+    return {
+      nombre,
+      celular: meta.celular || (esTelefono(c.external_id) ? c.external_id : null)
+    };
+  } catch (err) {
+    console.error('⚠️ No pude leer los datos del contacto:', err.message);
+    return {};
+  }
+}
+
+// Avisa a la asesora de una consulta (sin foto de por medio)
+// motivo llega como "Asunto|Nombre|Pedido|Celular" o solo "Asunto"
+async function avisarAsesora(motivo, destino, contactId, conversation) {
+  try {
+    const [asunto, nombreMarca, pedido, celularMarca] = String(motivo)
+      .split('|')
+      .map(s => (s || '').trim());
+
+    const guardado = await datosDelContacto(contactId);
+    const nombre = nombreMarca || guardado.nombre;
+    const celular = celularMarca || guardado.celular;
+    const wa = paraWaMe(celular);
+
+    const lineas = ['🔔 CONSULTA — este cliente te va a escribir'];
+    lineas.push(`📌 ${asunto || 'Sin clasificar'}`);
+    if (nombre) lineas.push(`👤 ${nombre}`);
+    if (pedido) lineas.push(`🛒 ${pedido}`);
+    lineas.push(`📱 ${celular || 'sin celular'}`);
+    if (wa) {
+      lineas.push(`💬 wa.me/${wa}`);
+    } else {
+      lineas.push('⚠️ El cliente no dejó celular. Espera a que él escriba.');
+    }
+
+    await sendMessage(AGENT_PHONE, lineas.join('\n'));
+    console.log(`🔔 Aviso de consulta enviado a ${AGENT_NAME}: ${asunto}`);
+
+    const resumen = `Consulta: ${asunto || 'sin clasificar'}${nombre ? ` — ${nombre}` : ''}`;
+    await marcarEsperandoAsesora(conversation, resumen);
+  } catch (err) {
+    console.error('⚠️ No pude avisar a la asesora:', err.message);
+  }
+}
+
+// Deja el caso en la lista de "casos" SIN silenciar al bot
+// (handled_by sigue en 'ai', el cliente puede seguir conversando)
+async function marcarEsperandoAsesora(conversation, resumen) {
+  if (!conversation) return;
+  try {
+    await supabase
+      .from('conversations')
+      .update({
+        status: 'waiting_agent',
+        summary: resumen,
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', conversation.id);
+    console.log('📋 Conversación marcada como pendiente');
+  } catch (err) {
+    console.error('⚠️ No pude marcar la conversación:', err.message);
+  }
+}
+
+// ¿La respuesta menciona el número de la asesora, en cualquier formato?
+function mencionaAsesora(texto) {
+  const soloDigitos = String(texto || '').replace(/\D/g, '');
+  return soloDigitos.includes(AGENT_PHONE.slice(2));
+}
+
+// RED DE SEGURIDAD: si la IA mandó al cliente donde la asesora pero
+// olvidó la marca, el aviso sale igual.
+async function redAsesora(texto, destino, contactId, conversation) {
+  if (!mencionaAsesora(texto)) return;
+
+  if (!puedeAvisar(destino)) {
+    console.log('🔕 Ya se avisó de este cliente hace poco, no se repite');
+    return;
+  }
+
+  console.log('🕸️ Se mencionó a la asesora sin marca — aviso automático');
+  await avisarAsesora('Consulta sin clasificar', destino, contactId, conversation);
+  avisoYaEnviado(destino);
+}
 
 async function cerrarVenta(destino, contactId, conversation, datos) {
   const atencion = estadoAtencion();
