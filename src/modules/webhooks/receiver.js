@@ -22,6 +22,9 @@ const AGENT_PHONE = '573227831687';   // con 57 al inicio, sin espacios
 const AGENT_NAME = 'Adriana';
 const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
 
+// Agente 2: recibe consultas que no son de Adriana (descuentos, SIM, etc.)
+const AGENTE2_PHONE = '314 333 4860';
+
 // Horarios de atención, en minutos desde medianoche (hora de Colombia)
 // 9:30am = 570 · 10am = 600 · 4pm = 960 · 7pm = 1140
 const HORARIO_SEMANA  = { apertura: 570, cierre: 1140 }; // lunes a sábado
@@ -33,7 +36,7 @@ const MARGEN_CIERRE_MIN = 30;
 const FESTIVOS = [];
 
 const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
-const HISTORY_LIMIT = 6;
+const HISTORY_LIMIT = 12;
 
 let cierrePendiente = null;
 
@@ -316,9 +319,33 @@ async function handleMessage(destino, text, imagenId = null) {
 
   try {
     console.log('🤖 Llamando Claude...');
-    const respuestaCruda = await generateResponse(contenidoUsuario, CLIENT_ID, history);
+        // Si ya conocemos el celular o el nombre del cliente, se lo decimos a la IA
+    let contenidoParaIA = contenidoUsuario;
+    const guardado = await datosDelContacto(contactId);
+    if (guardado.celular || guardado.nombre) {
+      const partes = [];
+      if (guardado.nombre) partes.push(`su nombre es ${guardado.nombre}`);
+      if (guardado.celular) {
+        const cel = String(guardado.celular).replace(/^57(?=\d{10}$)/, '');
+        partes.push(`su celular es ${cel} (es el número desde el que escribe)`);
+      }
+      const nota = `\n\n[NOTA INTERNA: ${partes.join(' y ')}. Ya lo tienes, no se lo vuelvas a pedir.]`;
+      contenidoParaIA = Array.isArray(contenidoUsuario)
+        ? contenidoUsuario.map(b => b.type === 'text' ? { ...b, text: b.text + nota } : b)
+        : contenidoUsuario + nota;
+      console.log(`📞 Datos conocidos del cliente: ${partes.join(', ')}`);
+    }
 
-    const { datos, fotos, textoLimpio, motivoAsesora } = extraerMarcas(respuestaCruda);
+    const respuestaCruda = await generateResponse(contenidoParaIA, CLIENT_ID, history);
+
+        // Consultas para el agente 2 (descuentos, SIM, etc.)
+    const marcaAgente2 = /\[AGENTE2:([^\]]*)\]/.exec(respuestaCruda);
+    const respuestaSinAgente2 = respuestaCruda.replace(/\[AGENTE2:[^\]]*\]/g, '').trim();
+    if (marcaAgente2) {
+      await avisarAgente2(marcaAgente2[1], destino, contactId, conversation);
+    }
+
+    const { datos, fotos, textoLimpio, motivoAsesora } = extraerMarcas(respuestaSinAgente2);
 
       // Avisar a la asesora si la IA lo pidió
     if (motivoAsesora) {
@@ -704,6 +731,16 @@ async function datosDelContacto(contactId) {
 
 // Avisa a la asesora de una consulta (sin foto de por medio)
 // motivo llega como "Asunto|Nombre|Pedido|Celular" o solo "Asunto"
+// Agente 2: consultas que decide otra persona (descuentos, SIM, etc.)
+// motivo llega como "Motivo|Detalle|Nombre|Celular"
+async function avisarAgente2(motivo, destino, contactId, conversation) {
+  ...
+  (todo el bloque que pegaste)
+  ...
+}
+
+async function avisarAsesora(motivo, destino, contactId, conversation) {
+
 async function avisarAsesora(motivo, destino, contactId, conversation) {
   try {
     const [asunto, nombreMarca, pedido, celularMarca] = String(motivo)
