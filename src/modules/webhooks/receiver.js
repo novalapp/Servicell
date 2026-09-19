@@ -23,7 +23,7 @@ const AGENT_NAME = 'Adriana';
 const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
 
 // Agente 2: recibe consultas que no son de Adriana (descuentos, SIM, etc.)
-const AGENTE2_PHONE = '314 333 4860';
+const AGENTE2_PHONE = '573143334860'; // con 57 al inicio, sin espacios
 
 // Horarios de atención, en minutos desde medianoche (hora de Colombia)
 // 9:30am = 570 · 10am = 600 · 4pm = 960 · 7pm = 1140
