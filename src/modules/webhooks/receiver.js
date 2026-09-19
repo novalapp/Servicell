@@ -734,12 +734,31 @@ async function datosDelContacto(contactId) {
 // Agente 2: consultas que decide otra persona (descuentos, SIM, etc.)
 // motivo llega como "Motivo|Detalle|Nombre|Celular"
 async function avisarAgente2(motivo, destino, contactId, conversation) {
-  ...
-  (todo el bloque que pegaste)
-  ...
-}
+  try {
+    const [asunto, detalle, nombreMarca, celularMarca] = String(motivo)
+      .split('|')
+      .map(s => (s || '').trim());
 
-async function avisarAsesora(motivo, destino, contactId, conversation) {
+    const guardado = await datosDelContacto(contactId);
+    const nombre = nombreMarca || guardado.nombre;
+    const celular = celularMarca || guardado.celular;
+    const wa = paraWaMe(celular);
+
+    const lineas = [`🟣 CONSULTA — ${asunto || 'Sin clasificar'}`];
+    if (detalle) lineas.push(`📝 ${detalle}`);
+    if (nombre) lineas.push(`👤 ${nombre}`);
+    lineas.push(`📱 ${celular || 'sin celular'}`);
+    if (wa) lineas.push(`💬 wa.me/${wa}`);
+    lineas.push('\nRespóndele desde el panel cuando tengas la respuesta.');
+
+    const texto = lineas.join('\n');
+    await sendMessage(AGENTE2_PHONE, texto);
+    console.log(`🟣 Aviso a agente 2: ${asunto}`);
+    await registrarAviso('agente2', texto, conversation?.id, true, null);
+  } catch (err) {
+    console.error('⚠️ No pude avisar al agente 2:', err.message);
+  }
+}
 
 async function avisarAsesora(motivo, destino, contactId, conversation) {
   try {
