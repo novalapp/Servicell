@@ -732,29 +732,45 @@ async function datosDelContacto(contactId) {
 // Avisa a la asesora de una consulta (sin foto de por medio)
 // motivo llega como "Asunto|Nombre|Pedido|Celular" o solo "Asunto"
 // Agente 2: consultas que decide otra persona (descuentos, SIM, etc.)
-// motivo llega como "Motivo|Detalle|Nombre|Celular"
+// motivo llega como "Motivo|Detalle" — ya no pide nombre ni celular al cliente
 async function avisarAgente2(motivo, destino, contactId, conversation) {
   try {
-    const [asunto, detalle, nombreMarca, celularMarca] = String(motivo)
+    const [asunto, detalle] = String(motivo)
       .split('|')
       .map(s => (s || '').trim());
 
     const guardado = await datosDelContacto(contactId);
-    const nombre = nombreMarca || guardado.nombre;
-    const celular = celularMarca || guardado.celular;
+    const celular = esTelefono(destino) ? destino : guardado.celular;
     const wa = paraWaMe(celular);
 
     const lineas = [`🟣 CONSULTA — ${asunto || 'Sin clasificar'}`];
     if (detalle) lineas.push(`📝 ${detalle}`);
-    if (nombre) lineas.push(`👤 ${nombre}`);
-    lineas.push(`📱 ${celular || 'sin celular'}`);
-    if (wa) lineas.push(`💬 wa.me/${wa}`);
-    lineas.push('\nRespóndele desde el panel cuando tengas la respuesta.');
+    if (celular) {
+      lineas.push(`📱 ${celular}`);
+      if (wa) lineas.push(`💬 wa.me/${wa}`);
+    } else {
+      lineas.push(`🔎 Sin celular. Buscar en el panel con: ${destino || 'sin identificador'}`);
+    }
+    if (conversation?.id) lineas.push(`🆔 Chat: ${conversation.id}`);
+    lineas.push('\nEntra al panel, silencia el chat si hace falta y respóndele.');
 
     const texto = lineas.join('\n');
     await sendMessage(AGENTE2_PHONE, texto);
     console.log(`🟣 Aviso a agente 2: ${asunto}`);
     await registrarAviso('agente2', texto, conversation?.id, true, null);
+
+    if (conversation?.id) {
+      await supabase
+        .from('conversations')
+        .update({
+          handled_by: 'human',
+          status: 'waiting_agent',
+          updated_at: new Date().toISOString(),
+          summary: `Agente 2: ${asunto || 'sin clasificar'}${detalle ? ` — ${detalle}` : ''}`
+        })
+        .eq('id', conversation.id);
+      console.log('🤐 Conversación silenciada para agente 2');
+    }
   } catch (err) {
     console.error('⚠️ No pude avisar al agente 2:', err.message);
   }
