@@ -304,7 +304,11 @@ async function handleMessage(destino, text, imagenId = null) {
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
       await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
-      await sendMessage(destino, mensajeYaEstaConVentas());
+      const esAgente2 = String(conversation.summary || '').startsWith('Agente 2:');
+      const mensaje = esAgente2
+        ? mensajeYaEstaConAgente2()
+        : mensajeYaEstaConVentas();
+      await sendMessage(destino, mensaje);
       return;
     }
 
@@ -759,18 +763,8 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
     console.log(`🟣 Aviso a agente 2: ${asunto}`);
     await registrarAviso('agente2', texto, conversation?.id, true, null);
 
-    if (conversation?.id) {
-      await supabase
-        .from('conversations')
-        .update({
-          handled_by: 'human',
-          status: 'waiting_agent',
-          updated_at: new Date().toISOString(),
-          summary: `Agente 2: ${asunto || 'sin clasificar'}${detalle ? ` — ${detalle}` : ''}`
-        })
-        .eq('id', conversation.id);
-      console.log('🤐 Conversación silenciada para agente 2');
-    }
+    const resumen = `Agente 2: ${asunto || 'sin clasificar'}${detalle ? ` — ${detalle}` : ''}`;
+    await marcarEsperandoAsesora(conversation, resumen);
   } catch (err) {
     console.error('⚠️ No pude avisar al agente 2:', err.message);
   }
@@ -1025,6 +1019,10 @@ Si aún no te ha escrito, puedes buscarla en el ${AGENT_DISPLAY}.`;
   return `Tu pedido ya quedó registrado 😊 ${AGENT_NAME}, de nuestra área de ventas, te escribe ${dia} a partir de las ${hora} desde el ${AGENT_DISPLAY}.`;
 }
 
+function mensajeYaEstaConAgente2() {
+  return 'Seguimos consultando tu caso 🧡 Apenas tengamos la respuesta te escribimos por este mismo chat.';
+}
+
 // ---------------------------------------------------------------
 // BASE DE DATOS
 // ---------------------------------------------------------------
@@ -1059,7 +1057,7 @@ async function getOrCreateContact(identificador) {
 async function getOrCreateConversation(contactId) {
   const { data: existing, error: findError } = await supabase
     .from('conversations')
-    .select('id, handled_by')
+    .select('id, handled_by, summary')
     .eq('client_id', CLIENT_ID)
     .eq('contact_id', contactId)
     .in('status', ['open', 'waiting_customer', 'waiting_agent'])
