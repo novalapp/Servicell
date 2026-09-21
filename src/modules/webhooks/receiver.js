@@ -770,6 +770,16 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
   }
 }
 
+// Copia, a tu número, de un aviso que ya se le mandó a Adriana —
+// para que puedas hacerle seguimiento sin estar pendiente del panel
+async function copiaParaJefa(etiqueta, texto) {
+  try {
+    await sendMessage(AGENTE2_PHONE, `🔴 COPIA (${etiqueta}) — esto ya le llegó a ${AGENT_NAME}, no hace falta que respondas aquí:\n\n${texto}`);
+  } catch (err) {
+    console.error('⚠️ No pude mandar la copia a la jefa:', err.message);
+  }
+}
+
 async function avisarAsesora(motivo, destino, contactId, conversation) {
   try {
     const [asunto, nombreMarca, pedido, celularMarca] = String(motivo)
@@ -796,6 +806,7 @@ async function avisarAsesora(motivo, destino, contactId, conversation) {
     await sendMessage(AGENT_PHONE, textoAviso);
     console.log(`🔔 Aviso de consulta enviado a ${AGENT_NAME}: ${asunto}`);
     await registrarAviso('consulta', textoAviso, conversation?.id, true, null);
+    await copiaParaJefa('Consulta', textoAviso);
 
     const resumen = `Consulta: ${asunto || 'sin clasificar'}${nombre ? ` — ${nombre}` : ''}`;
     await marcarEsperandoAsesora(conversation, resumen);
@@ -856,6 +867,7 @@ async function cerrarVenta(destino, contactId, conversation, datos) {
     await sendMessage(AGENT_PHONE, textoPedido);
     console.log(`🔔 Aviso enviado a ${AGENT_NAME}`);
     await registrarAviso('pedido', textoPedido, conversation?.id, true, null);
+    await copiaParaJefa('Pedido', textoPedido);
   } catch (err) {
     console.error('⚠️ NO SE PUDO AVISAR A LA ASESORA:', err.message);
     await registrarAviso('pedido', textoPedido, conversation?.id, false, err.message);
@@ -1171,6 +1183,7 @@ async function reenviarAsesora(mediaId, motivo, destino) {
 
     const tipo = /preaprob/i.test(asunto) ? 'preaprobado' : 'comprobante';
     await registrarAviso(tipo, textoFoto, null, true, null);
+    await copiaParaJefa('Foto para Adriana', `${textoFoto}\n\n(la foto solo le llegó a ${AGENT_NAME}, revísala con ella si hace falta)`);
   } catch (err) {
     console.error('⚠️ No pude reenviar la foto a la asesora:', err.message);
   }
