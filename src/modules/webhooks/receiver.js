@@ -375,14 +375,42 @@ async function handleMessage(destino, text, imagenId = null) {
     }
 
     if (textoLimpio) {
-      console.log(`✍️ Respuesta: ${textoLimpio}`);
-      await sendMessage(destino, textoLimpio);
+      const historialTexto = history.map(m => m.content).filter(Boolean).join(' ');
+      const riesgo = respuestaTieneRiesgo(textoLimpio, historialTexto);
 
-      await redAsesora(textoLimpio, destino, contactId, conversation);
+      if (riesgo) {
+        console.error(`🚨 Respuesta bloqueada (${riesgo}): ${textoLimpio}`);
+        const mensajeSeguro = 'Dame un momento, ya te confirmo eso.';
+        await sendMessage(destino, mensajeSeguro);
+        await copiaParaJefa(
+          `⚠️ RESPUESTA BLOQUEADA (${riesgo})`,
+          `La IA iba a responder esto, lo bloqueé antes de que le llegara al cliente:\n\n"${textoLimpio}"\n\nEntra al panel y respóndele tú.`
+        );
+        if (conversation?.id) {
+          await supabase
+            .from('conversations')
+            .update({
+              handled_by: 'human',
+              status: 'waiting_agent',
+              updated_at: new Date().toISOString(),
+              summary: `Respuesta bloqueada: ${riesgo}`
+            })
+            .eq('id', conversation.id);
+        }
+        if (conversation) {
+          saveMessage(conversation.id, contactId, 'agent', mensajeSeguro)
+            .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+        }
+      } else {
+        console.log(`✍️ Respuesta: ${textoLimpio}`);
+        await sendMessage(destino, textoLimpio);
 
-      if (conversation) {
-        saveMessage(conversation.id, contactId, 'agent', textoLimpio)
-          .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+        await redAsesora(textoLimpio, destino, contactId, conversation);
+
+        if (conversation) {
+          saveMessage(conversation.id, contactId, 'agent', textoLimpio)
+            .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+        }
       }
     }
   } catch (error) {
@@ -832,6 +860,51 @@ async function marcarEsperandoAsesora(conversation, resumen) {
   } catch (err) {
     console.error('⚠️ No pude marcar la conversación:', err.message);
   }
+}
+
+// GUARDIÁN DE RESPUESTAS: revisa el texto que la IA va a mandarle al
+// cliente y bloquea las promesas de alto riesgo (plata) que la tienda
+// nunca hace, sin depender de que el prompt se cumpla al pie de la letra.
+// Devuelve el motivo del bloqueo, o null si la respuesta es segura.
+function respuestaTieneRiesgo(texto, historialTexto) {
+  const t = String(texto || '').toLowerCase();
+
+  // Ninguna frase que diga que el cargador/cubo/adaptador viene incluido
+  // es válida — eso nunca es cierto, ni en iPhone ni en iPad.
+  const frasesAccesorioIncluido = [
+    'cargador completo incluido',
+    'cargador incluido',
+    'trae cargador',
+    'viene con cargador',
+    'incluye cargador',
+    'incluye adaptador',
+    'incluye el cubo',
+    'incluye cubo',
+    'viene con cubo',
+    'viene con el cubo',
+    'viene con adaptador',
+    'con todo lo de fábrica'
+  ];
+  const prometeAccesorioIncluido = frasesAccesorioIncluido.some(frase => {
+    const idx = t.indexOf(frase);
+    if (idx === -1) return false;
+    const antes = t.slice(Math.max(0, idx - 20), idx);
+    return !/\bno\b/.test(antes);
+  });
+  if (prometeAccesorioIncluido) return 'accesorio ofrecido como incluido';
+
+  // Contra entrega para la línea iPhone 17 solo si el modelo aparece
+  // en la conversación (mensaje actual + historial reciente).
+  const afirmaContraEntrega =
+    /manejamos contra entrega|contra entrega (funciona|es bien f[aá]cil|sin problema|perfecto)/.test(t) &&
+    !/no manejamos contra entrega|no hacemos contra entrega/.test(t);
+  if (afirmaContraEntrega) {
+    const contexto = `${historialTexto || ''} ${t}`.toLowerCase();
+    const esLinea17 = /iphone\s*17\b|17\s*pro\s*max|\b17\s*pro\b/.test(contexto);
+    if (esLinea17) return 'contra entrega ofrecida para línea iPhone 17';
+  }
+
+  return null;
 }
 
 // ¿La respuesta menciona el número de la asesora, en cualquier formato?
