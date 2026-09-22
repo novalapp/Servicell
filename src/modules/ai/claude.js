@@ -230,7 +230,7 @@ REGLAS:
     if (nota) console.log('🎨 Nota de color agregada');
 
     const system = [
-      { type: "text", text: parteEstable, cache_control: { type: "ephemeral" } }
+      { type: "text", text: parteEstable, cache_control: { type: "ephemeral", ttl: "1h" } }
     ];
 
     if (nota) system.push({ type: "text", text: nota });
