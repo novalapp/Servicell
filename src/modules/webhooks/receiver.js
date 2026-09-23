@@ -1256,7 +1256,8 @@ async function reenviarAsesora(mediaId, motivo, destino) {
 
     const tipo = /preaprob/i.test(asunto) ? 'preaprobado' : 'comprobante';
     await registrarAviso(tipo, textoFoto, null, true, null);
-    await copiaParaJefa('Foto para Adriana', `${textoFoto}\n\n(la foto solo le llegó a ${AGENT_NAME}, revísala con ella si hace falta)`);
+    await copiaParaJefa('Foto para Adriana', textoFoto);
+    await enviarAMeta(AGENTE2_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
   } catch (err) {
     console.error('⚠️ No pude reenviar la foto a la asesora:', err.message);
   }
