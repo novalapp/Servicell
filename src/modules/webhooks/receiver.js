@@ -910,7 +910,13 @@ function respuestaTieneRiesgo(texto, historialTexto) {
 // ¿La respuesta menciona el número de la asesora, en cualquier formato?
 function mencionaAsesora(texto) {
   const soloDigitos = String(texto || '').replace(/\D/g, '');
-  return soloDigitos.includes(AGENT_PHONE.slice(2));
+  if (soloDigitos.includes(AGENT_PHONE.slice(2))) return true;
+
+  // Frases de flujos que deberían traer marca [ASESORA:...] pero a
+  // veces la IA las dice sin ponerla
+  const t = String(texto || '').toLowerCase();
+  const frasesSinMarca = ['te tenemos anotado'];
+  return frasesSinMarca.some(frase => t.includes(frase));
 }
 
 // RED DE SEGURIDAD: si la IA mandó al cliente donde la asesora pero
