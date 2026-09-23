@@ -792,7 +792,7 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
     await registrarAviso('agente2', texto, conversation?.id, true, null);
 
     const resumen = `Agente 2: ${asunto || 'sin clasificar'}${detalle ? ` — ${detalle}` : ''}`;
-    await marcarEsperandoAsesora(conversation, resumen);
+    await marcarEsperandoAsesora(conversation, resumen, 'waiting_agente2');
   } catch (err) {
     console.error('⚠️ No pude avisar al agente 2:', err.message);
   }
@@ -845,13 +845,13 @@ async function avisarAsesora(motivo, destino, contactId, conversation) {
 
 // Deja el caso en la lista de "casos" SIN silenciar al bot
 // (handled_by sigue en 'ai', el cliente puede seguir conversando)
-async function marcarEsperandoAsesora(conversation, resumen) {
+async function marcarEsperandoAsesora(conversation, resumen, status = 'waiting_agent') {
   if (!conversation) return;
   try {
     await supabase
       .from('conversations')
       .update({
-        status: 'waiting_agent',
+        status,
         summary: resumen,
         updated_at: new Date().toISOString()
       })
@@ -1145,7 +1145,7 @@ async function getOrCreateConversation(contactId) {
     .select('id, handled_by, summary')
     .eq('client_id', CLIENT_ID)
     .eq('contact_id', contactId)
-    .in('status', ['open', 'waiting_customer', 'waiting_agent'])
+    .in('status', ['open', 'waiting_customer', 'waiting_agent', 'waiting_agente2'])
     .order('created_at', { ascending: false })
     .limit(1);
 
