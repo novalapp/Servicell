@@ -25,6 +25,20 @@ const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
 // Agente 2: recibe consultas que no son de Adriana (descuentos, SIM, etc.)
 const AGENTE2_PHONE = '573143334860'; // con 57 al inicio, sin espacios
 
+// Saludo de confianza: se manda UNA SOLA VEZ, en el primer mensaje de
+// cada contacto nuevo, antes de que la IA entre a la conversación
+const SALUDO_CONFIANZA_IMAGEN = 'https://uqqhbqgebwnbpgeztubs.supabase.co/storage/v1/object/public/servicell-images/3ac7bb5f-a052-4982-8ce4-0706b9ee42a0.JPG';
+const SALUDO_CONFIANZA_TEXTO = `💙 ¡Hola! Bienvenido/a a *Servicell*.
+
+Estás hablando con nuestro *WhatsApp oficial*.
+
+Sabemos que antes de realizar una compra es importante sentirse seguro, por eso puedes verificar nuestros canales oficiales y confirmar que estás contactando directamente con nosotros 👇
+
+🔎 *Verifica aquí nuestra página oficial y líneas oficiales:*
+https://www.instagram.com/p/DdfchQ8kSUJ/?img_index=2&stkn=ZnRqb2ZpNTF1aTdw
+
+Ahora sí 😊 cuéntame, ¿qué iPhone estás buscando?`;
+
 // Horarios de atención, en minutos desde medianoche (hora de Colombia)
 // 9:30am = 570 · 10am = 600 · 4pm = 960 · 7pm = 1140
 const HORARIO_SEMANA  = { apertura: 570, cierre: 1140 }; // lunes a sábado
@@ -220,8 +234,14 @@ function haceCuanto(fechaISO) {
 // Responde cuando llega algo que no es texto (audio, foto, sticker...)
 async function responderNoTexto(destino, tipo) {
   try {
-    const contactId = await getOrCreateContact(destino);
+    const [contactId, contactoNuevo] = await getOrCreateContact(destino);
     const conversation = await getOrCreateConversation(contactId);
+
+    if (contactoNuevo) {
+      console.log('💙 Contacto nuevo — mandando saludo de confianza');
+      await enviarSaludoConfianza(destino, conversation, contactId);
+      return;
+    }
 
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación con la asesora, no se responde');
@@ -271,6 +291,7 @@ async function handleMessage(destino, text, imagenId = null) {
   }
 
   let contactId = null;
+  let contactoNuevo = false;
   let conversation = null;
   let history = [];
 
@@ -298,8 +319,15 @@ async function handleMessage(destino, text, imagenId = null) {
   await new Promise(resolve => setTimeout(resolve, 2000));
 
   try {
-    contactId = await getOrCreateContact(destino);
+    [contactId, contactoNuevo] = await getOrCreateContact(destino);
     conversation = await getOrCreateConversation(contactId);
+
+    if (contactoNuevo) {
+      console.log('💙 Contacto nuevo — mandando saludo de confianza');
+      await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
+      await enviarSaludoConfianza(destino, conversation, contactId);
+      return;
+    }
 
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
@@ -1127,7 +1155,7 @@ async function getOrCreateContact(identificador) {
     .limit(1);
 
   if (findError) throw new Error(`buscar contacto: ${findError.message}`);
-  if (existing && existing.length > 0) return existing[0].id;
+  if (existing && existing.length > 0) return [existing[0].id, false];
 
   const { data: created, error: createError } = await supabase
     .from('contacts')
@@ -1142,7 +1170,7 @@ async function getOrCreateContact(identificador) {
   if (createError) throw new Error(`crear contacto: ${createError.message}`);
 
   console.log(`👤 Contacto nuevo creado: ${identificador}`);
-  return created[0].id;
+  return [created[0].id, true];
 }
 
 async function getOrCreateConversation(contactId) {
@@ -1271,6 +1299,20 @@ async function reenviarAsesora(mediaId, motivo, destino) {
 
 async function sendImage(destino, imageUrl) {
   return enviarAMeta(destino, { type: 'image', image: { link: imageUrl } }, 'imagen');
+}
+
+// Manda el saludo de confianza (imagen + texto en un solo mensaje) y
+// lo guarda en el historial para que la IA sepa que ya se mandó
+async function enviarSaludoConfianza(destino, conversation, contactId) {
+  await enviarAMeta(
+    destino,
+    { type: 'image', image: { link: SALUDO_CONFIANZA_IMAGEN, caption: SALUDO_CONFIANZA_TEXTO } },
+    'saludo de confianza'
+  );
+  if (conversation?.id) {
+    saveMessage(conversation.id, contactId, 'agent', SALUDO_CONFIANZA_TEXTO)
+      .catch(err => console.error('⚠️ No se guardó el saludo de confianza:', err.message));
+  }
 }
 
 async function enviarAMeta(destino, contenido, tipo) {
