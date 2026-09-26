@@ -812,7 +812,11 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
       lineas.push(`🔎 Sin celular. Buscar en el panel con: ${destino || 'sin identificador'}`);
     }
     if (conversation?.id) lineas.push(`🆔 Chat: ${conversation.id}`);
-    lineas.push('\nEntra al panel, silencia el chat si hace falta y respóndele.');
+
+    const debePausar = /^plan retoma/i.test(asunto || '');
+    lineas.push(debePausar
+      ? '\nEl chat ya quedó en pausa esperando tu respuesta.'
+      : '\nEntra al panel, silencia el chat si hace falta y respóndele.');
 
     const texto = lineas.join('\n');
     await sendMessage(AGENTE2_PHONE, texto);
@@ -820,7 +824,21 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
     await registrarAviso('agente2', texto, conversation?.id, true, null);
 
     const resumen = `Agente 2: ${asunto || 'sin clasificar'}${detalle ? ` — ${detalle}` : ''}`;
-    await marcarEsperandoAsesora(conversation, resumen, 'waiting_agente2');
+
+    if (debePausar && conversation?.id) {
+      await supabase
+        .from('conversations')
+        .update({
+          handled_by: 'human',
+          status: 'waiting_agente2',
+          updated_at: new Date().toISOString(),
+          summary: resumen
+        })
+        .eq('id', conversation.id);
+      console.log('🤐 Conversación pausada — esperando plan retoma');
+    } else {
+      await marcarEsperandoAsesora(conversation, resumen, 'waiting_agente2');
+    }
   } catch (err) {
     console.error('⚠️ No pude avisar al agente 2:', err.message);
   }
