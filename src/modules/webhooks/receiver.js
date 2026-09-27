@@ -373,11 +373,16 @@ async function handleMessage(destino, text, imagenId = null) {
         // Consultas para el agente 2 (descuentos, SIM, etc.)
     const marcaAgente2 = /\[AGENTE2:([^\]]*)\]/.exec(respuestaCruda);
     const respuestaSinAgente2 = respuestaCruda.replace(/\[AGENTE2:[^\]]*\]/g, '').trim();
+    let esPlanRetoma = false;
     if (marcaAgente2) {
       await avisarAgente2(marcaAgente2[1], destino, contactId, conversation);
+      esPlanRetoma = /^plan retoma/i.test(String(marcaAgente2[1]).split('|')[0].trim());
     }
 
-    const { datos, fotos, textoLimpio, motivoAsesora } = extraerMarcas(respuestaSinAgente2);
+    const { datos, fotos, textoLimpio: textoGenerado, motivoAsesora } = extraerMarcas(respuestaSinAgente2);
+    // El mensaje de plan retoma queda fijo y con horario correcto, sin
+    // depender de que la IA lo redacte bien cada vez
+    const textoLimpio = esPlanRetoma ? mensajePlanRetomaConfirmando() : textoGenerado;
 
       // Avisar a la asesora si la IA lo pidió
     if (motivoAsesora) {
@@ -1122,6 +1127,20 @@ ${cuando}
 Ella ya tiene todos tus datos, así que te da la información de pago y te confirma el envío.
 
 ${cierre}`;
+}
+
+// Mensaje fijo para cuando se escala un caso de plan retoma — con
+// horario correcto, sin depender de que la IA lo redacte bien
+function mensajePlanRetomaConfirmando() {
+  const atencion = estadoAtencion();
+
+  if (atencion.estado === 'abierto') {
+    return 'Listo, danos un momento para evaluarlo. Te confirmamos por este mismo chat en cuanto lo tengamos.';
+  }
+
+  const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
+  const hora = formatHora(atencion.apertura);
+  return `Listo, ya quedó registrado. Como estamos fuera del horario de atención, te confirmamos *${dia} a partir de las ${hora}* por este mismo chat.`;
 }
 
 function mensajeAgente(destino, datos) {
