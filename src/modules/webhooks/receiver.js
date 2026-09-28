@@ -1010,10 +1010,15 @@ async function cerrarVenta(destino, contactId, conversation, datos) {
   try {
     await guardarDatosEnvio(contactId, datos);
 
+    // No se pone handled_by: 'human' aquí a propósito: el cliente
+    // puede seguir preguntando después de cerrar el pedido (otro
+    // accesorio, un cambio, una duda), y el bot debe poder seguir
+    // atendiéndolo. La venta ya quedó avisada a la asesora arriba;
+    // si un caso puntual necesita silenciar el chat, se hace a mano
+    // desde el panel.
     await supabase
       .from('conversations')
       .update({
-        handled_by: 'human',
         status: 'waiting_agent',
         updated_at: new Date().toISOString(),
         summary: `${datos.pedido || 'Pedido'}${datos.total ? ` — ${datos.total}` : ''} — pago por ${datos.medio_pago || 'definir'}`
@@ -1021,7 +1026,7 @@ async function cerrarVenta(destino, contactId, conversation, datos) {
       .eq('id', conversation.id);
 
     await saveMessage(conversation.id, contactId, 'agent', mensajeCliente);
-    console.log('✅ Conversación traspasada a la asesora');
+    console.log('✅ Pedido registrado, asesora avisada — el bot sigue disponible');
   } catch (err) {
     console.error('⚠️ Error guardando el traspaso:', err.message);
   }
