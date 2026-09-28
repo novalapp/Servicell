@@ -86,6 +86,13 @@ async function getAgentConfig(clientId) {
   if (error) throw new Error(`Failed to fetch agent config: ${error.message}`);
   if (!data || data.length === 0) throw new Error("Agent config not found for this client");
 
+  // No hay ORDER BY, así que si por error quedó más de una fila activa
+  // para el mismo cliente, cuál de las dos se usa no está garantizado.
+  // Esto deja rastro en los logs para poder diagnosticarlo.
+  if (data.length > 1) {
+    console.warn(`⚠️ Hay ${data.length} filas activas en agent_config para client_id=${clientId}. IDs: ${data.map(d => d.id).join(', ')}. Usando la primera — revisa cuál debería quedar activa.`);
+  }
+
   return data[0];
 }
 
