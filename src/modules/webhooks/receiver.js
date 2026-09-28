@@ -377,6 +377,8 @@ async function handleMessage(destino, text, imagenId = null) {
     if (marcaAgente2) {
       await avisarAgente2(marcaAgente2[1], destino, contactId, conversation);
       esPlanRetoma = /^plan retoma/i.test(String(marcaAgente2[1]).split('|')[0].trim());
+    } else {
+      esPlanRetoma = await redAgente2PlanRetoma(respuestaCruda, destino, contactId, conversation);
     }
 
     const { datos, fotos, textoLimpio: textoGenerado, motivoAsesora } = extraerMarcas(respuestaSinAgente2);
@@ -985,6 +987,35 @@ async function redAsesora(texto, destino, contactId, conversation) {
   console.log('🕸️ Se mencionó a la asesora sin marca — aviso automático');
   await avisarAsesora('Consulta sin clasificar', destino, contactId, conversation);
   avisoYaEnviado(destino);
+}
+
+// ¿La respuesta confirma un plan retoma sin traer la marca [AGENTE2:...]?
+// Frase de la IA al confirmarlo (ver prompt, PLAN RETOMA / PARTE DE PAGO,
+// PASO 3): "...confirmar en cuánto te podemos recibir el equipo..."
+function mencionaPlanRetomaSinMarca(texto) {
+  return /en cu[aá]nto te (podemos recibir|recibimos)/i.test(String(texto || ''));
+}
+
+// RED DE SEGURIDAD: si la IA confirmó un plan retoma pero olvidó la
+// marca [AGENTE2:Plan retoma|...], el aviso sale igual — sin esto, el
+// cliente queda esperando una respuesta que nadie va a mandar.
+async function redAgente2PlanRetoma(texto, destino, contactId, conversation) {
+  if (!mencionaPlanRetomaSinMarca(texto)) return false;
+
+  if (!puedeAvisar(destino)) {
+    console.log('🔕 Ya se avisó de este cliente hace poco, no se repite');
+    return true;
+  }
+
+  console.log('🕸️ Se confirmó un plan retoma sin marca — aviso automático');
+  await avisarAgente2(
+    'Plan retoma|Marca perdida — revisar el chat completo para los datos del equipo',
+    destino,
+    contactId,
+    conversation
+  );
+  avisoYaEnviado(destino);
+  return true;
 }
 
 async function cerrarVenta(destino, contactId, conversation, datos) {
