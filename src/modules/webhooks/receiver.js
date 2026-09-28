@@ -944,15 +944,17 @@ function respuestaTieneRiesgo(texto, historialTexto) {
   });
   if (prometeAccesorioIncluido) return 'accesorio ofrecido como incluido';
 
-  // Contra entrega para la línea iPhone 17 solo si el modelo aparece
-  // en la conversación (mensaje actual + historial reciente).
+  // Contra entrega solo aplica a equipos de exhibición. Los NUEVOS
+  // (línea iPhone 17, iPad, computadores) nunca la tienen — si el
+  // modelo aparece en la conversación (mensaje actual + historial
+  // reciente), bloquea la promesa.
   const afirmaContraEntrega =
     /manejamos contra entrega|contra entrega (funciona|es bien f[aá]cil|sin problema|perfecto)/.test(t) &&
     !/no manejamos contra entrega|no hacemos contra entrega/.test(t);
   if (afirmaContraEntrega) {
     const contexto = `${historialTexto || ''} ${t}`.toLowerCase();
-    const esLinea17 = /iphone\s*17\b|17\s*pro\s*max|\b17\s*pro\b/.test(contexto);
-    if (esLinea17) return 'contra entrega ofrecida para línea iPhone 17';
+    const esEquipoNuevo = /iphone\s*17\b|17\s*pro\s*max|\b17\s*pro\b|ipad|macbook|mac\s*book|computador|port[aá]til|laptop/.test(contexto);
+    if (esEquipoNuevo) return 'contra entrega ofrecida para un equipo nuevo (iPhone 17, iPad o computador)';
   }
 
   return null;
