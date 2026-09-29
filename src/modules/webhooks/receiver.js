@@ -91,9 +91,12 @@ router.post('/webhook', async (req, res) => {
 
         const text = message.text?.body || '';
 
-        // Las fotos sí las puede ver la IA
+        // Las fotos sí las puede ver la IA. Si había texto esperando
+        // (mensajes mandados justo antes), se lo mandamos junto con
+        // la foto en vez de perderlo o mandarlo aparte.
         if (message.type === 'image') {
-          const pie = message.image?.caption || '';
+          const pendiente = sacarTextoPendiente(destino);
+          const pie = [pendiente, message.image?.caption || ''].filter(Boolean).join('\n');
           console.log(`🖼️ Foto recibida de ${destino}`);
           handleMessage(destino, pie, message.image?.id).catch(err => {
             console.error('Error en handleMessage:', err);
@@ -103,6 +106,7 @@ router.post('/webhook', async (req, res) => {
 
         // Lo demás (audio, sticker, video, documento) no se puede procesar
         if (message.type !== 'text') {
+          sacarTextoPendiente(destino); // no se puede combinar con esto, se pierde igual
           console.log(`🎙️ Mensaje tipo "${message.type}" de ${destino}`);
           responderNoTexto(destino, message.type).catch(err => {
             console.error('Error respondiendo a no-texto:', err);
@@ -111,10 +115,7 @@ router.post('/webhook', async (req, res) => {
         }
 
         console.log(`📱 Mensaje de ${destino}: ${text}`);
-
-        handleMessage(destino, text).catch(err => {
-          console.error('Error en handleMessage:', err);
-        });
+        encolarTexto(destino, text);
       }
     }
   } catch (error) {
@@ -213,6 +214,50 @@ async function descargarImagen(mediaId) {
   return { base64: buffer.toString('base64'), mime: info.mime_type };
 }
 
+// ---------------------------------------------------------------
+// AGRUPAR MENSAJES SEGUIDOS
+// ---------------------------------------------------------------
+// Cuando un cliente manda varias burbujas de WhatsApp seguidas y
+// rápido (una idea partida en varios mensajes), cada una llegaba por
+// su lado a la IA, que respondía a cada pedacito por separado sin
+// ver el conjunto. Acá se agrupan: si llega más de un mensaje del
+// mismo número en pocos segundos, se juntan en uno solo antes de
+// llamar a la IA.
+const ESPERA_AGRUPAR_MS = 4000;
+const buffersPorDestino = new Map(); // destino -> { textos: string[], timer }
+
+function encolarTexto(destino, texto) {
+  let buffer = buffersPorDestino.get(destino);
+  if (!buffer) {
+    buffer = { textos: [] };
+    buffersPorDestino.set(destino, buffer);
+  }
+  if (texto) buffer.textos.push(texto);
+
+  clearTimeout(buffer.timer);
+  buffer.timer = setTimeout(() => {
+    buffersPorDestino.delete(destino);
+    const textoCombinado = buffer.textos.join('\n');
+    if (buffer.textos.length > 1) {
+      console.log(`📦 Se agruparon ${buffer.textos.length} mensajes de ${destino} en uno solo`);
+    }
+    handleMessage(destino, textoCombinado).catch(err => {
+      console.error('Error en handleMessage:', err);
+    });
+  }, ESPERA_AGRUPAR_MS);
+}
+
+// Si había texto esperando a agruparse cuando llega una foto (u otro
+// tipo de mensaje), lo saca del buffer para no perderlo ni mandarlo
+// aparte.
+function sacarTextoPendiente(destino) {
+  const buffer = buffersPorDestino.get(destino);
+  if (!buffer) return '';
+  clearTimeout(buffer.timer);
+  buffersPorDestino.delete(destino);
+  return buffer.textos.join('\n');
+}
+
 async function handleMessage(destino, text, imagenId = null) {
   if (destino === AGENT_PHONE) {
     await handleAgente(text);
@@ -243,9 +288,6 @@ async function handleMessage(destino, text, imagenId = null) {
       return;
     }
   }
-
-  console.log('⏳ Esperando 2 segundos...');
-  await new Promise(resolve => setTimeout(resolve, 2000));
 
   try {
     [contactId, contactoNuevo] = await getOrCreateContact(destino);
