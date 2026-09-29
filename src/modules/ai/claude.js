@@ -1,5 +1,6 @@
 const Anthropic = require("@anthropic-ai/sdk");
 const supabase = require("../../config/database");
+const { fraseEstadoAtencion } = require("../../utils/horario");
 
 const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
@@ -232,15 +233,20 @@ REGLAS:
 - No prometas fechas de entrega sin verificar
 - Tono ${config.tone}. Responde en español.`;
 
-    // Esta cambia en cada mensaje -> va aparte para no romper el caché
+    // Esto cambia en cada mensaje -> va aparte para no romper el caché
     const nota = notaDeColor(textoDelMensaje(messageContent), inventario.colores);
     if (nota) console.log('🎨 Nota de color agregada');
+
+    // La hora real, para que no tenga que adivinar si está abierto o
+    // cerrado (por ejemplo, al confirmar cuándo se revisa un color).
+    const horaActual = `HORA ACTUAL: ${fraseEstadoAtencion()}`;
 
     const system = [
       { type: "text", text: parteEstable, cache_control: { type: "ephemeral", ttl: "1h" } }
     ];
 
     if (nota) system.push({ type: "text", text: nota });
+    system.push({ type: "text", text: horaActual });
 
     const messages = [
       ...conversationHistory,

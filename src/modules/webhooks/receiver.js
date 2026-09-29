@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../../config/database');
 const { generateResponse } = require('../ai/claude');
+const { estadoAtencion, formatHora } = require('../../utils/horario');
 
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
@@ -38,16 +39,6 @@ Sabemos que antes de realizar una compra es importante sentirse seguro, por eso 
 https://www.instagram.com/p/DdfchQ8kSUJ/?img_index=2&stkn=ZnRqb2ZpNTF1aTdw
 
 Ahora sí 😊 cuéntame, ¿qué iPhone estás buscando?`;
-
-// Horarios de atención, en minutos desde medianoche (hora de Colombia)
-// 9:30am = 570 · 10am = 600 · 4pm = 960 · 7pm = 1140
-const HORARIO_SEMANA  = { apertura: 570, cierre: 1140 }; // lunes a sábado
-const HORARIO_DOMINGO = { apertura: 600, cierre: 960 };  // domingos y festivos
-
-const MARGEN_CIERRE_MIN = 30;
-
-// Festivos colombianos, formato 'YYYY-MM-DD'
-const FESTIVOS = [];
 
 const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
 const HISTORY_LIMIT = 12;
@@ -153,71 +144,9 @@ function esTelefono(valor) {
   return /^\d{7,15}$/.test(String(valor || ''));
 }
 
-// ---------------------------------------------------------------
-// HORARIO
-// ---------------------------------------------------------------
-
-function ahoraColombia() {
-  const partes = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Bogota',
-    hour: 'numeric',
-    minute: 'numeric',
-    hour12: false
-  }).formatToParts(new Date());
-
-  const valor = tipo => partes.find(p => p.type === tipo)?.value;
-
-  return {
-    hora: parseInt(valor('hour'), 10) % 24,
-    minuto: parseInt(valor('minute'), 10)
-  };
-}
-
-function infoDia(offsetDias) {
-  const fecha = new Date(Date.now() + offsetDias * 86400000);
-
-  const partes = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Bogota',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    weekday: 'short'
-  }).formatToParts(fecha);
-
-  const valor = tipo => partes.find(p => p.type === tipo)?.value;
-  const dias = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-
-  return {
-    fecha: `${valor('year')}-${valor('month')}-${valor('day')}`,
-    dia: dias[valor('weekday')]
-  };
-}
-
-function horarioDe(offsetDias) {
-  const { fecha, dia } = infoDia(offsetDias);
-  const comoDomingo = (dia === 0) || FESTIVOS.includes(fecha);
-  return comoDomingo ? HORARIO_DOMINGO : HORARIO_SEMANA;
-}
-
-function formatHora(minutos) {
-  const h24 = Math.floor(minutos / 60);
-  const m = minutos % 60;
-  const sufijo = h24 >= 12 ? 'pm' : 'am';
-  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
-  return m === 0 ? `${h12}${sufijo}` : `${h12}:${String(m).padStart(2, '0')}${sufijo}`;
-}
-
-function estadoAtencion() {
-  const { hora, minuto } = ahoraColombia();
-  const ahora = hora * 60 + minuto;
-  const hoy = horarioDe(0);
-
-  if (ahora < hoy.apertura) return { estado: 'temprano', apertura: hoy.apertura };
-  if (ahora >= hoy.cierre - MARGEN_CIERRE_MIN) {
-    return { estado: 'cerrado', apertura: horarioDe(1).apertura };
-  }
-  return { estado: 'abierto', apertura: hoy.apertura };
-}
+// El horario de atención vive en src/utils/horario.js — lo comparten
+// este archivo y la IA (ver claude.js), para no tener dos copias de
+// la misma lógica.
 
 function haceCuanto(fechaISO) {
   if (!fechaISO) return '';
