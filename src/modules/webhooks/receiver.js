@@ -937,7 +937,35 @@ function respuestaTieneRiesgo(texto, historialTexto) {
     if (esEquipoNuevo) return 'contra entrega ofrecida para un equipo nuevo (iPhone 17, iPad o computador)';
   }
 
+  if (confirmaColorSinVerificar(t)) {
+    return 'color confirmado como disponible sin la salvedad de verificar';
+  }
+
   return null;
+}
+
+// Las unidades cambian de color más rápido de lo que el inventario se
+// actualiza (ver prompt, REGLA #3). Si la IA da un color por hecho
+// SIN la salvedad de que hay que verificarlo, se bloquea — así no se
+// le promete al cliente algo que puede no estar cuando llegue.
+const COLORES_CONOCIDOS = [
+  'negro', 'blanco', 'plata', 'plateado', 'dorado', 'oro', 'azul', 'morado',
+  'lila', 'verde', 'rojo', 'rosado', 'rosa', 'amarillo', 'naranja', 'gris',
+  'titan', 'titán', 'espacial', 'natural', 'medianoche', 'grafito',
+  'purpura', 'púrpura', 'cobre', 'bronce'
+];
+
+function confirmaColorSinVerificar(textoMinuscula) {
+  const tieneColor = COLORES_CONOCIDOS.some(c => new RegExp(`\\b${c}`).test(textoMinuscula));
+  if (!tieneColor) return false;
+
+  const afirmaDisponible = /\b(s[ií]|tenemos|hay|disponible|lo tenemos|nos lleg[oó])\b/.test(textoMinuscula);
+  if (!afirmaDisponible) return false;
+
+  const tieneSalvedad = /rota(n)?|rotando|verificar|confirmar|disponibilidad exacta|seg[uú]n el registro|se nos agot[oó]/.test(textoMinuscula);
+  if (tieneSalvedad) return false;
+
+  return true;
 }
 
 // ¿La respuesta menciona el número de la asesora, en cualquier formato?
