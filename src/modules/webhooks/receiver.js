@@ -282,6 +282,13 @@ async function handleMessage(destino, text, imagenId = null) {
       ];
       textoParaGuardar = text ? `[foto] ${text}` : '[el cliente envió una foto]';
       console.log('📷 Foto descargada y lista para la IA');
+
+      // Copia SIEMPRE a Natalia, sin depender de que la IA decida
+      // avisar — así ve cualquier foto que mande un cliente, no solo
+      // las que la IA clasifica como comprobante o preaprobado.
+      copiaFotoSiempreParaNatalia(destino, imagenId, text).catch(err => {
+        console.error('⚠️ No pude mandar la copia automática de la foto:', err.message);
+      });
     } catch (err) {
       console.error('⚠️ No pude descargar la foto:', err.message);
       await sendMessage(destino, 'Disculpa, no pude abrir esa foto 🙈 ¿Me la puedes reenviar o contarme por escrito qué necesitas?');
@@ -1310,6 +1317,20 @@ async function getHistory(conversationId) {
 
 async function sendMessage(destino, body) {
   return enviarAMeta(destino, { type: 'text', text: { body: body } }, 'texto');
+}
+
+// Manda SIEMPRE una copia de cualquier foto que mande un cliente a
+// Natalia (AGENTE2_PHONE), sin depender de que la IA la clasifique
+// como comprobante, preaprobado o cualquier otro caso puntual.
+async function copiaFotoSiempreParaNatalia(destino, mediaId, textoCliente) {
+  const wa = esTelefono(destino) ? paraWaMe(destino) : null;
+  const lineas = ['📷 Foto de un cliente (copia automática)'];
+  if (textoCliente) lineas.push(`📝 "${textoCliente}"`);
+  if (wa) lineas.push(`💬 wa.me/${wa}`);
+  else lineas.push(`🔎 Identificador: ${destino}`);
+
+  await sendMessage(AGENTE2_PHONE, lineas.join('\n'));
+  await enviarAMeta(AGENTE2_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
 }
 
 // Le reenvía a la asesora una foto con el contexto del cliente
