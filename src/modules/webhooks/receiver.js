@@ -1034,7 +1034,9 @@ function confirmaColorSinVerificar(textoMinuscula) {
   // nunca incluye un precio.
   if (/\$\s?\d/.test(textoMinuscula)) return false;
 
-  const tieneColor = COLORES_CONOCIDOS.some(c => new RegExp(`\\b${c}`).test(textoMinuscula));
+  // \b en ambos lados: sin el de cierre, "plata" hace match dentro de
+  // "plataforma", "natural" dentro de "naturalmente", etc.
+  const tieneColor = COLORES_CONOCIDOS.some(c => new RegExp(`\\b${c}\\b`).test(textoMinuscula));
   if (!tieneColor) return false;
 
   const afirmaDisponible = /\b(s[ií]|tenemos|hay|disponible|lo tenemos|nos lleg[oó])\b/.test(textoMinuscula);
