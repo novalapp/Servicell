@@ -311,9 +311,12 @@ async function handleMessage(destino, text, imagenId = null) {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
       await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
       const esAgente2 = String(conversation.summary || '').startsWith('Agente 2:');
+      const esRevisionBloqueada = String(conversation.summary || '').startsWith('Respuesta bloqueada:');
       const mensaje = esAgente2
         ? mensajeYaEstaConAgente2()
-        : mensajeYaEstaConVentas();
+        : esRevisionBloqueada
+          ? mensajeYaEstaEnRevision()
+          : mensajeYaEstaConVentas();
       await sendMessage(destino, mensaje);
       return;
     }
@@ -1024,6 +1027,13 @@ const COLORES_CONOCIDOS = [
 ];
 
 function confirmaColorSinVerificar(textoMinuscula) {
+  // Si el mensaje trae un precio, es una respuesta de precio/inventario
+  // (ej. "el más económico es el iPhone 11 en negro por $700.000") y
+  // menciona el color solo como dato del equipo, no como confirmación
+  // de color para cerrar la venta (PASO 6). El guion real de PASO 6
+  // nunca incluye un precio.
+  if (/\$\s?\d/.test(textoMinuscula)) return false;
+
   const tieneColor = COLORES_CONOCIDOS.some(c => new RegExp(`\\b${c}`).test(textoMinuscula));
   if (!tieneColor) return false;
 
@@ -1297,6 +1307,14 @@ Si aún no te ha escrito, puedes buscarla en el ${AGENT_DISPLAY}.`;
 
 function mensajeYaEstaConAgente2() {
   return 'Seguimos consultando tu caso 🧡 Apenas tengamos la respuesta te escribimos por este mismo chat.';
+}
+
+// Para cuando una respuesta se bloqueó (revisión pendiente) y el cliente
+// vuelve a escribir antes de que alguien la revise. A diferencia de
+// mensajeYaEstaConVentas, aquí NO hay pedido ni pago de por medio —
+// no se puede reutilizar ese mensaje o el cliente cree que ya compró.
+function mensajeYaEstaEnRevision() {
+  return 'Ya tenemos tu mensaje anotado 😊 en un momento te ayudamos por este mismo chat.';
 }
 
 // ---------------------------------------------------------------
