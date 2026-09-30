@@ -360,6 +360,12 @@ async function handleMessage(destino, text, imagenId = null) {
     }
 
     const { datos, fotos, textoLimpio: textoGenerado, motivoAsesora } = extraerMarcas(respuestaSinAgente2);
+    // El plan retoma a veces sale marcado como [ASESORA:Plan retoma|...]
+    // en vez de [AGENTE2:...] (depende de la version del prompt) — el
+    // mensaje fijo con horario correcto aplica en los dos casos.
+    if (!esPlanRetoma && motivoAsesora) {
+      esPlanRetoma = /^plan retoma/i.test(String(motivoAsesora).split('|')[0].trim());
+    }
     // El mensaje de plan retoma queda fijo y con horario correcto, sin
     // depender de que la IA lo redacte bien cada vez
     const textoLimpio = esPlanRetoma ? mensajePlanRetomaConfirmando() : textoGenerado;
