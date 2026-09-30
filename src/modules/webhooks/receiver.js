@@ -366,9 +366,33 @@ async function handleMessage(destino, text, imagenId = null) {
     if (!esPlanRetoma && motivoAsesora) {
       esPlanRetoma = /^plan retoma/i.test(String(motivoAsesora).split('|')[0].trim());
     }
+    // Red de seguridad final: no depende de que la IA escriba el
+    // asunto exacto "Plan retoma" en la marca. Si el cliente mencionó
+    // plan retoma en la conversación y la IA mandó CUALQUIER marca
+    // interna en esta respuesta, se trata como plan retoma igual.
+    if (!esPlanRetoma && (marcaAgente2 || motivoAsesora)) {
+      const historialClienteTexto = history.map(m => m.content).filter(Boolean).join(' ');
+      esPlanRetoma = mencionaPlanRetoma(`${historialClienteTexto} ${text}`);
+    }
     // El mensaje de plan retoma queda fijo y con horario correcto, sin
     // depender de que la IA lo redacte bien cada vez
     const textoLimpio = esPlanRetoma ? mensajePlanRetomaConfirmando() : textoGenerado;
+
+    // La pausa se aplica siempre aquí, sin importar por cuál camino se
+    // detectó el plan retoma — así no depende de que avisarAgente2 o
+    // avisarAsesora hayan reconocido el asunto exacto por su cuenta.
+    if (esPlanRetoma && conversation?.id) {
+      await supabase
+        .from('conversations')
+        .update({
+          handled_by: 'human',
+          status: 'waiting_agente2',
+          updated_at: new Date().toISOString(),
+          summary: 'Plan retoma'
+        })
+        .eq('id', conversation.id);
+      console.log('🤐 Conversación pausada — plan retoma');
+    }
 
       // Avisar a la asesora si la IA lo pidió
     if (motivoAsesora) {
@@ -994,6 +1018,14 @@ function confirmaColorSinVerificar(textoMinuscula) {
   if (tieneSalvedad) return false;
 
   return true;
+}
+
+// ¿En algún punto de esto se mencionó plan retoma? Se usa como red de
+// seguridad final: si el cliente lo mencionó y la IA mandó cualquier
+// marca interna, se trata como plan retoma aunque la IA no haya
+// escrito el asunto exacto "Plan retoma".
+function mencionaPlanRetoma(texto) {
+  return /plan retoma|\bretoma\b|parte de pago|recibir mi equipo usado|me reciben el m[ií]o/i.test(String(texto || ''));
 }
 
 // ¿La respuesta menciona el número de la asesora, en cualquier formato?
