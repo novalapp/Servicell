@@ -867,6 +867,14 @@ async function avisarAsesora(motivo, destino, contactId, conversation) {
       lineas.push('⚠️ El cliente no dejó celular. Espera a que él escriba.');
     }
 
+    // El plan retoma sí pausa el chat del todo: hay que evaluar el
+    // equipo en persona, así que seguir conversando con el bot
+    // mientras tanto no sirve de nada.
+    const debePausar = /^plan retoma/i.test(asunto || '');
+    lineas.push(debePausar
+      ? '\nEl chat ya quedó en pausa esperando tu respuesta.'
+      : '\nEntra al panel, silencia el chat si hace falta y respóndele.');
+
     const textoAviso = lineas.join('\n');
     await sendMessage(AGENT_PHONE, textoAviso);
     console.log(`🔔 Aviso de consulta enviado a ${AGENT_NAME}: ${asunto}`);
@@ -874,7 +882,21 @@ async function avisarAsesora(motivo, destino, contactId, conversation) {
     await copiaParaJefa('Consulta', textoAviso);
 
     const resumen = `Consulta: ${asunto || 'sin clasificar'}${nombre ? ` — ${nombre}` : ''}`;
-    await marcarEsperandoAsesora(conversation, resumen);
+
+    if (debePausar && conversation?.id) {
+      await supabase
+        .from('conversations')
+        .update({
+          handled_by: 'human',
+          status: 'waiting_agent',
+          updated_at: new Date().toISOString(),
+          summary: resumen
+        })
+        .eq('id', conversation.id);
+      console.log('🤐 Conversación pausada — esperando plan retoma');
+    } else {
+      await marcarEsperandoAsesora(conversation, resumen);
+    }
   } catch (err) {
     console.error('⚠️ No pude avisar a la asesora:', err.message);
   }
