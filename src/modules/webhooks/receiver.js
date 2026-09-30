@@ -455,6 +455,17 @@ async function handleMessage(destino, text, imagenId = null) {
             .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
         }
       }
+    } else if (fotos.length === 0) {
+      // No quedó texto para mandar (por ejemplo, un [DATOS] inválido
+      // sin dirección, en un mensaje que no traía nada más). Sin este
+      // respaldo, el cliente se queda sin ninguna respuesta.
+      console.warn('⚠️ La IA no dejó texto para responder — se manda un mensaje de respaldo');
+      const mensajeRespaldo = 'Dame un momento, ya te confirmo eso.';
+      await sendMessage(destino, mensajeRespaldo);
+      if (conversation) {
+        saveMessage(conversation.id, contactId, 'agent', mensajeRespaldo)
+          .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+      }
     }
   } catch (error) {
     console.error('❌ Error en handleMessage:', error);
@@ -1001,10 +1012,15 @@ function respuestaTieneRiesgo(texto, historialTexto) {
 // SIN la salvedad de que hay que verificarlo, se bloquea — así no se
 // le promete al cliente algo que puede no estar cuando llegue.
 const COLORES_CONOCIDOS = [
+  // Español
   'negro', 'blanco', 'plata', 'plateado', 'dorado', 'oro', 'azul', 'morado',
   'lila', 'verde', 'rojo', 'rosado', 'rosa', 'amarillo', 'naranja', 'gris',
   'titan', 'titán', 'espacial', 'natural', 'medianoche', 'grafito',
-  'purpura', 'púrpura', 'cobre', 'bronce'
+  'purpura', 'púrpura', 'cobre', 'bronce',
+  // Inglés — el prompt (sección COLORES) le enseña a la IA a usar la
+  // palabra del cliente tal cual, que puede venir en inglés
+  'silver', 'black', 'white', 'gold', 'blue', 'purple', 'green',
+  'midnight', 'graphite'
 ];
 
 function confirmaColorSinVerificar(textoMinuscula) {
