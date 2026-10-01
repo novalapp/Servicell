@@ -17,13 +17,14 @@ const FAMILIAS_COLOR = {
   claros:    ['plata', 'plateado', 'silver', 'blanco', 'white', 'gris', 'gray', 'grey', 'natural'],
   oscuros:   ['negro', 'black', 'grafito', 'graphite', 'medianoche', 'midnight', 'espacial'],
   dorados:   ['oro', 'dorado', 'dorada', 'gold', 'champan', 'champagne'],
-  azules:    ['azul', 'blue', 'sierra'],
+  azules:    ['azul', 'blue', 'sierra', 'azul claro', 'celeste'],
   naranjas:  ['naranja', 'orange', 'cobre', 'bronce'],
   morados:   ['morado', 'morada', 'lila', 'purpura', 'violeta', 'purple', 'malva'],
   rosados:   ['rosa', 'rosado', 'rosada', 'pink'],
   verdes:    ['verde', 'green', 'pino'],
   amarillos: ['amarillo', 'amarilla', 'yellow'],
-  rojos:     ['rojo', 'roja', 'red']
+  rojos:     ['rojo', 'roja', 'red'],
+  borgona:   ['borgona', 'borgoña', 'vinotinto', 'vino tinto', 'vino', 'burdeos', 'granate', 'bordo', 'wine', 'burgundy']
 };
 
 function simplificar(texto) {
