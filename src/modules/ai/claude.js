@@ -143,10 +143,14 @@ async function getProductsInfo(clientId) {
   const grupos = new Map();
 
   data.forEach(p => {
-    if (p.color) colores.add(p.color);
-
     const bateria = bateriaMasAlta(p.battery_units);
     const hay = p.stock > 0;
+
+    // Solo colores con stock real entran aquí — si no, la nota
+    // automática de color ("el cliente pidió un color que sí tenemos")
+    // le diría a la IA que confirme un color que en realidad está
+    // AGOTADO, contradiciendo esa marca en el mismo mensaje.
+    if (p.color && hay) colores.add(p.color);
     const clave = `${p.category}|${p.name}|${p.capacity}|${p.price}|${hay}|${bateria || ''}`;
 
     if (!grupos.has(clave)) {
