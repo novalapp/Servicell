@@ -349,7 +349,7 @@ async function handleMessage(destino, text, imagenId = null) {
       console.log(`📞 Datos conocidos del cliente: ${partes.join(', ')}`);
     }
 
-    const respuestaCruda = await generateResponse(contenidoParaIA, CLIENT_ID, history);
+    const { texto: respuestaCruda, agotados: modelosAgotados } = await generateResponse(contenidoParaIA, CLIENT_ID, history);
 
         // Consultas para el agente 2 (descuentos, SIM, etc.)
     const marcaAgente2 = /\[AGENTE2:([^\]]*)\]/.exec(respuestaCruda);
@@ -422,7 +422,7 @@ async function handleMessage(destino, text, imagenId = null) {
 
     if (textoLimpio) {
       const historialTexto = history.map(m => m.content).filter(Boolean).join(' ');
-      const riesgo = respuestaTieneRiesgo(textoLimpio, historialTexto);
+      const riesgo = respuestaTieneRiesgo(textoLimpio, historialTexto, modelosAgotados);
 
       if (riesgo) {
         console.error(`🚨 Respuesta bloqueada (${riesgo}): ${textoLimpio}`);
@@ -959,12 +959,49 @@ async function marcarEsperandoAsesora(conversation, resumen, status = 'waiting_a
   }
 }
 
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// La IA confía en su propio conocimiento del mundo real para modelos
+// famosos (ej. "iPhone 18 Pro") y a veces confirma que lo tienen aunque
+// el inventario diga AGOTADO — probado directamente contra el modelo,
+// ni poniendo la regla más arriba en el prompt lo evitó siempre. Esta
+// red de seguridad no depende del texto del prompt: recibe la lista de
+// modelos sin ningún stock (ver getProductsInfo en claude.js) y bloquea
+// si la respuesta los menciona sin negar la disponibilidad.
+function confirmaModeloAgotado(textoMinuscula, modelosAgotados) {
+  if (!Array.isArray(modelosAgotados) || modelosAgotados.length === 0) return null;
+
+  for (const nombre of modelosAgotados) {
+    if (!nombre) continue;
+    // Lookahead para que "iPhone 18 Pro" no haga match dentro de
+    // "iPhone 18 Pro Max" cuando ese SÍ tiene stock — son modelos
+    // distintos aunque uno sea substring del otro.
+    const regexNombre = new RegExp(`\\b${escapeRegex(nombre.toLowerCase())}\\b(?!\\s+(pro|max|plus|mini))`);
+    if (!regexNombre.test(textoMinuscula)) continue;
+
+    const niegaDisponibilidad = /agotad[oa]|no lo tenemos|no la tenemos|no manejamos|no disponible|no hay unidades|se nos agot[oó]/.test(textoMinuscula);
+    if (niegaDisponibilidad) continue;
+
+    const afirmaDisponibleOPrecio =
+      /\b(s[ií]|tenemos|hay|disponible|lo tenemos|lo manejamos|nos lleg[oó])\b/.test(textoMinuscula) ||
+      /\$\s?\d/.test(textoMinuscula);
+    if (afirmaDisponibleOPrecio) return `modelo agotado (${nombre}) confirmado como disponible`;
+  }
+
+  return null;
+}
+
 // GUARDIÁN DE RESPUESTAS: revisa el texto que la IA va a mandarle al
 // cliente y bloquea las promesas de alto riesgo (plata) que la tienda
 // nunca hace, sin depender de que el prompt se cumpla al pie de la letra.
 // Devuelve el motivo del bloqueo, o null si la respuesta es segura.
-function respuestaTieneRiesgo(texto, historialTexto) {
+function respuestaTieneRiesgo(texto, historialTexto, modelosAgotados) {
   const t = String(texto || '').toLowerCase();
+
+  const riesgoAgotado = confirmaModeloAgotado(t, modelosAgotados);
+  if (riesgoAgotado) return riesgoAgotado;
 
   // Ninguna frase que diga que el cargador/cubo/adaptador viene incluido
   // es válida — eso nunca es cierto, ni en iPhone ni en iPad.

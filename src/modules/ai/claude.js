@@ -132,11 +132,11 @@ async function getProductsInfo(clientId) {
 
   if (error) {
     console.error("Error fetching products:", error);
-    return { texto: "", colores: [] };
+    return { texto: "", colores: [], agotados: [] };
   }
 
   if (!data || data.length === 0) {
-    return { texto: "Sin productos cargados", colores: [] };
+    return { texto: "Sin productos cargados", colores: [], agotados: [] };
   }
 
   const colores = new Set();
@@ -190,7 +190,20 @@ async function getProductsInfo(clientId) {
     texto += `${cat}: ${lineas.join(' | ')}\n`;
   });
 
-  return { texto, colores: Array.from(colores) };
+  // Modelos (por nombre) donde NINGUNA fila activa tiene stock — se usan
+  // como red de seguridad en receiver.js para bloquear una respuesta que
+  // confirme disponibilidad de algo que, según la base de datos, no hay.
+  // Es por nombre, no por capacidad/color: si el Pro Max tiene alguna
+  // variante con stock, no cuenta como agotado aunque otra sí lo esté.
+  const stockPorNombre = new Map();
+  data.forEach(p => {
+    stockPorNombre.set(p.name, (stockPorNombre.get(p.name) || false) || p.stock > 0);
+  });
+  const agotados = [...stockPorNombre.entries()]
+    .filter(([, hay]) => !hay)
+    .map(([nombre]) => nombre);
+
+  return { texto, colores: Array.from(colores), agotados };
 }
 
 async function getPromotionsInfo(clientId) {
@@ -268,7 +281,7 @@ REGLAS:
     const uso = response.usage || {};
     console.log(`💰 Tokens — entrada:${uso.input_tokens || 0} caché_leído:${uso.cache_read_input_tokens || 0} caché_creado:${uso.cache_creation_input_tokens || 0} salida:${uso.output_tokens || 0}`);
 
-    return response.content[0].text;
+    return { texto: response.content[0].text, agotados: inventario.agotados };
   } catch (error) {
     console.error("Error calling Claude API:", error);
     throw new Error(`Failed to generate response: ${error.message}`);
