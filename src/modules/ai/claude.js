@@ -6,7 +6,7 @@ const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
-const MODELO = "claude-haiku-4-5";
+const MODELO = "claude-sonnet-5";
 const MAX_TOKENS = 700;
 
 // ---------------------------------------------------------------
@@ -274,6 +274,11 @@ REGLAS:
     const response = await client.messages.create({
       model: MODELO,
       max_tokens: MAX_TOKENS,
+      // Con el pensamiento extendido activado, Sonnet a veces gastaba
+      // la mayoría de MAX_TOKENS "pensando" y dejaba muy poco (o nada)
+      // para el texto real — en una prueba se quedó sin responder.
+      // Lo desactivamos: para un chat de ventas corto no hace falta.
+      thinking: { type: 'disabled' },
       system: system,
       messages: messages,
     });
@@ -281,7 +286,13 @@ REGLAS:
     const uso = response.usage || {};
     console.log(`💰 Tokens — entrada:${uso.input_tokens || 0} caché_leído:${uso.cache_read_input_tokens || 0} caché_creado:${uso.cache_creation_input_tokens || 0} salida:${uso.output_tokens || 0}`);
 
-    return { texto: response.content[0].text, agotados: inventario.agotados };
+    // Con Sonnet, content[0] a veces es un bloque "thinking" en vez del
+    // texto — content[0].text quedaría undefined. Buscamos el primer
+    // bloque de texto en vez de asumir que es el primero de la lista.
+    const bloqueTexto = response.content.find(b => b.type === 'text');
+    if (!bloqueTexto) throw new Error('La respuesta de Claude no trajo ningún bloque de texto');
+
+    return { texto: bloqueTexto.text, agotados: inventario.agotados };
   } catch (error) {
     console.error("Error calling Claude API:", error);
     throw new Error(`Failed to generate response: ${error.message}`);
