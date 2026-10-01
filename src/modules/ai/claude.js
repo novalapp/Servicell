@@ -168,24 +168,34 @@ async function getProductsInfo(clientId) {
     if (p.color) grupos.get(clave).colores.push(p.color);
   });
 
+  // Los agotados van en su propia línea, separados de los disponibles
+  // — mezclados al final de una línea larga de inventario es fácil que
+  // la IA no les preste atención (lo vimos pasar en pruebas reales).
   const porCategoria = {};
+  const lineasAgotadas = [];
 
   for (const g of grupos.values()) {
-    const cat = g.categoria || 'Otros';
-    if (!porCategoria[cat]) porCategoria[cat] = [];
-
     const partes = [g.nombre];
     if (g.capacidad) partes.push(g.capacidad);
     if (g.colores.length) partes.push(g.colores.join('/'));
 
     const precio = `$${Number(g.precio).toLocaleString('es-CO')}`;
-    const estado = g.hay ? '' : ' AGOTADO';
     const bat = g.bateria ? ` bat.${g.bateria}` : '';
+    const linea = `${partes.join(' ')} ${precio}${bat}`;
 
-    porCategoria[cat].push(`${partes.join(' ')} ${precio}${bat}${estado}`);
+    if (g.hay) {
+      const cat = g.categoria || 'Otros';
+      if (!porCategoria[cat]) porCategoria[cat] = [];
+      porCategoria[cat].push(linea);
+    } else {
+      lineasAgotadas.push(`${linea} AGOTADO`);
+    }
   }
 
   let texto = "INVENTARIO:\n";
+  if (lineasAgotadas.length) {
+    texto += `AGOTADO (sin stock — NUNCA digas que estos están disponibles ni des su precio como si se pudiera comprar ya): ${lineasAgotadas.join(' | ')}\n`;
+  }
   Object.entries(porCategoria).forEach(([cat, lineas]) => {
     texto += `${cat}: ${lineas.join(' | ')}\n`;
   });
