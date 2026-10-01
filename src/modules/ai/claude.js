@@ -6,7 +6,7 @@ const client = new Anthropic({
   apiKey: process.env.CLAUDE_API_KEY,
 });
 
-const MODELO = "claude-sonnet-5";
+const MODELO = "claude-haiku-4-5";
 const MAX_TOKENS = 700;
 
 // ---------------------------------------------------------------
