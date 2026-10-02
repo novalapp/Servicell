@@ -160,12 +160,9 @@ async function getProductsInfo(clientId) {
         capacidad: p.capacity,
         precio: p.price,
         hay,
-        bateria,
-        colores: []
+        bateria
       });
     }
-
-    if (p.color) grupos.get(clave).colores.push(p.color);
   });
 
   // Los agotados van en su propia línea, separados de los disponibles
@@ -177,7 +174,6 @@ async function getProductsInfo(clientId) {
   for (const g of grupos.values()) {
     const partes = [g.nombre];
     if (g.capacidad) partes.push(g.capacidad);
-    if (g.colores.length) partes.push(g.colores.join('/'));
 
     const precio = `$${Number(g.precio).toLocaleString('es-CO')}`;
     const bat = g.bateria ? ` bat.${g.bateria}` : '';
