@@ -993,12 +993,51 @@ function confirmaModeloAgotado(textoMinuscula, modelosAgotados) {
   return null;
 }
 
+// Desde el iPhone 14 en adelante (cualquier variante: Pro, Pro Max o
+// normal) es eSIM — del 13 Pro Max para atrás es SIM física. Es por
+// GENERACIÓN, no por si es Pro, así que basta con el número. Probado
+// directo contra el modelo: aunque el prompt lo dice bien, Haiku sigue
+// asumiendo SIM física para modelos recientes (probablemente porque
+// fuera de EE. UU. muchos sí la traen) — mismo patrón que el stock.
+function generacionesMencionadas(texto) {
+  const matches = [...String(texto || '').toLowerCase().matchAll(/iphone\s*(\d{2})\b/g)];
+  return [...new Set(matches.map(m => parseInt(m[1], 10)).filter(n => n >= 11 && n <= 20))];
+}
+
+function confirmaSimIncorrecta(textoMinuscula, historialTexto) {
+  const contexto = `${historialTexto || ''} ${textoMinuscula}`;
+  const generaciones = generacionesMencionadas(contexto);
+  if (generaciones.length === 0) return null;
+
+  const idxFisica = textoMinuscula.search(/\bsim f[ií]sica\b/);
+  const niegaFisica = idxFisica !== -1 && /\bno\b/.test(textoMinuscula.slice(Math.max(0, idxFisica - 25), idxFisica));
+  const afirmaFisica = idxFisica !== -1 && !niegaFisica;
+  const afirmaEsim = /\be ?sim\b|sim virtual/.test(textoMinuscula);
+
+  if (!afirmaFisica && !afirmaEsim) return null;
+
+  for (const gen of generaciones) {
+    const debeSerEsim = gen >= 14;
+    if (debeSerEsim && afirmaFisica) {
+      return `tipo de SIM incorrecto (iPhone ${gen} es eSIM, la respuesta afirma SIM física)`;
+    }
+    if (!debeSerEsim && afirmaEsim && !afirmaFisica) {
+      return `tipo de SIM incorrecto (iPhone ${gen} es SIM física, la respuesta afirma eSIM)`;
+    }
+  }
+
+  return null;
+}
+
 // GUARDIÁN DE RESPUESTAS: revisa el texto que la IA va a mandarle al
 // cliente y bloquea las promesas de alto riesgo (plata) que la tienda
 // nunca hace, sin depender de que el prompt se cumpla al pie de la letra.
 // Devuelve el motivo del bloqueo, o null si la respuesta es segura.
 function respuestaTieneRiesgo(texto, historialTexto, modelosAgotados) {
   const t = String(texto || '').toLowerCase();
+
+  const riesgoSim = confirmaSimIncorrecta(t, historialTexto);
+  if (riesgoSim) return riesgoSim;
 
   const riesgoAgotado = confirmaModeloAgotado(t, modelosAgotados);
   if (riesgoAgotado) return riesgoAgotado;
