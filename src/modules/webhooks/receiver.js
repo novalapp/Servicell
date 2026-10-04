@@ -3,6 +3,13 @@ const router = express.Router();
 const supabase = require('../../config/database');
 const { generateResponse } = require('../ai/claude');
 const { estadoAtencion, formatHora } = require('../../utils/horario');
+const os = require('os');
+const path = require('path');
+const fs = require('fs/promises');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
+const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
 
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
@@ -1746,17 +1753,68 @@ router.post('/api/panel/enviar', async (req, res) => {
   }
 });
 
-// POST /api/panel/enviar-audio   { conversationId, audioUrl }
-// Mismo patrón que /api/panel/enviar, pero manda un mensaje de audio
-// usando un link público en vez de subir/procesar el archivo acá.
+// Descarga un audio (normalmente .webm, lo que graba el panel desde el
+// navegador), lo convierte a .ogg/opus — el formato que sí acepta la
+// API de WhatsApp — y sube el resultado al mismo bucket de Supabase.
+// Devuelve la URL pública del .ogg, o null si algo falla (el llamador
+// decide qué hacer: intentar con el original, avisar al panel, etc.).
 //
-// OJO — FORMATO: la API de WhatsApp (Meta Cloud API) solo acepta audio
-// en AAC, MP4, MPEG, AMR, o OGG (códec Opus). Un .webm grabado desde
-// Chrome/Android normalmente NO cumple eso — Meta lo va a rechazar, y
-// este endpoint va a devolver el error de Meta en vez de un falso
-// "ok: true". Si eso pasa seguido, hay que convertir el archivo (ej. a
-// .ogg/opus) antes de mandarlo — no está hecho todavía, confirmar con
-// pruebas reales antes de dar esto por terminado.
+// Se intenta primero solo CAMBIAR EL CONTENEDOR (-c:a copy): la
+// mayoría de grabaciones .webm del navegador ya usan el códec Opus
+// por dentro — el mismo que usa WhatsApp — así que no hace falta
+// recodificar, solo empacar el audio en .ogg. Si eso falla (el audio
+// no era Opus), se recodifica de verdad como respaldo.
+async function convertirAudioAOgg(audioUrlOriginal) {
+  const tmpDir = os.tmpdir();
+  const base = `audio-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const entrada = path.join(tmpDir, `${base}.webm`);
+  const salida = path.join(tmpDir, `${base}.ogg`);
+
+  try {
+    const res = await fetch(audioUrlOriginal);
+    if (!res.ok) throw new Error(`No se pudo descargar el audio original (HTTP ${res.status})`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    await fs.writeFile(entrada, buffer);
+
+    try {
+      await execFileAsync(ffmpegPath, ['-y', '-i', entrada, '-c:a', 'copy', '-f', 'ogg', salida]);
+    } catch (errCopy) {
+      console.log('🎙️ No se pudo copiar el códec tal cual, recodificando a opus:', errCopy.message);
+      await execFileAsync(ffmpegPath, ['-y', '-i', entrada, '-c:a', 'libopus', '-b:a', '64k', '-f', 'ogg', salida]);
+    }
+
+    const oggBuffer = await fs.readFile(salida);
+    const rutaStorage = `convertido-${base}.ogg`;
+
+    const { error: errorSubida } = await supabase.storage
+      .from('servicell-chat-audio')
+      .upload(rutaStorage, oggBuffer, { contentType: 'audio/ogg' });
+
+    if (errorSubida) throw new Error(`No se pudo subir el .ogg convertido: ${errorSubida.message}`);
+
+    const { data: urlData } = supabase.storage.from('servicell-chat-audio').getPublicUrl(rutaStorage);
+    if (!urlData?.publicUrl) throw new Error('No se pudo obtener la URL pública del .ogg convertido');
+
+    console.log('🎙️ Audio convertido a ogg/opus:', urlData.publicUrl);
+    return urlData.publicUrl;
+  } catch (err) {
+    console.error('⚠️ No se pudo convertir el audio a ogg:', err.message);
+    return null;
+  } finally {
+    await fs.unlink(entrada).catch(() => {});
+    await fs.unlink(salida).catch(() => {});
+  }
+}
+
+// POST /api/panel/enviar-audio   { conversationId, audioUrl }
+// Mismo patrón que /api/panel/enviar, pero manda un mensaje de audio.
+//
+// FORMATO: la API de WhatsApp (Meta Cloud API) solo acepta audio en
+// AAC, MP4, MPEG, AMR, o OGG (códec Opus) — un .webm del navegador no
+// sirve tal cual, por eso se convierte primero con convertirAudioAOgg.
+// Si la conversión falla por algún motivo, se intenta con el archivo
+// original de todas formas (puede que sí sirva) en vez de cortar en
+// seco, pero queda loggeado.
 router.post('/api/panel/enviar-audio', async (req, res) => {
   if (!panelAutorizado(req)) return res.status(401).json({ error: 'No autorizado' });
 
@@ -1784,17 +1842,20 @@ router.post('/api/panel/enviar-audio', async (req, res) => {
 
     if (!destino) return res.status(400).json({ error: 'El contacto no tiene identificador' });
 
-    const resultado = await enviarAMeta(destino, { type: 'audio', audio: { link: audioUrl } }, 'audio');
+    const audioConvertido = await convertirAudioAOgg(audioUrl);
+    const audioUrlFinal = audioConvertido || audioUrl;
+
+    const resultado = await enviarAMeta(destino, { type: 'audio', audio: { link: audioUrlFinal } }, 'audio');
 
     if (!resultado.ok) {
       console.error('❌ Error en /api/panel/enviar-audio (Meta rechazó el audio):', JSON.stringify(resultado.data));
       return res.status(502).json({
-        error: 'WhatsApp rechazó el audio — probablemente el formato (revisa que sea AAC, MP4, MPEG, AMR u OGG/Opus)',
+        error: 'WhatsApp rechazó el audio' + (audioConvertido ? ' (ya convertido a ogg/opus, revisa el detalle)' : ' — no se pudo convertir y el original tampoco sirvió'),
         detalleMeta: resultado.data
       });
     }
 
-    await saveMessage(conv.id, conv.contact_id, 'human', audioUrl, 'audio');
+    await saveMessage(conv.id, conv.contact_id, 'human', audioUrlFinal, 'audio');
 
     await supabase
       .from('conversations')
