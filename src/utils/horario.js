@@ -97,7 +97,9 @@ async function estadoAtencion(clientId) {
   const ahora = hora * 60 + minuto;
   const hoy = horarioDe(0);
 
-  if (ahora < hoy.apertura) return { estado: 'temprano', apertura: hoy.apertura };
+  if (ahora < hoy.apertura) {
+    return { estado: 'temprano', apertura: hoy.apertura, minutosParaAbrir: hoy.apertura - ahora };
+  }
   if (ahora >= hoy.cierre - MARGEN_CIERRE_MIN) {
     return { estado: 'cerrado', apertura: horarioDe(1).apertura };
   }

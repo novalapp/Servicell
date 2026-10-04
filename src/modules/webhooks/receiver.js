@@ -1498,15 +1498,19 @@ async function mensajePlanRetomaConfirmando() {
 // con el horario correcto según cuándo llegó.
 async function mensajeAudioConfirmando() {
   const atencion = await estadoAtencion(CLIENT_ID);
-  const hora = formatHora(atencion.apertura);
 
   if (atencion.estado === 'abierto') {
-    return 'Ya te escucho y te respondo, dame un momento.';
+    return 'Dame un momento, ya te escucho. 😊🫂';
   }
   if (atencion.estado === 'temprano') {
-    return `Aún no hemos abierto, pero más o menos a partir de las ${hora} escucho tu audio y te respondo 🙌`;
+    // Dentro de la última hora antes de abrir: suena creíble decir que
+    // ya van de camino. Antes de eso (madrugada), uno genérico.
+    if (atencion.minutosParaAbrir <= 60) {
+      return 'Dame un momento que vamos de camino al local, ya te escucho. 😊';
+    }
+    return 'Te escucho y te respondo lo más pronto posible. 😊🫂';
   }
-  return `Ya cerramos por hoy 😊 Mañana a las ${hora} escucho tu audio y te respondo.`;
+  return 'Me encantaría ayudarte ya, pero como ya cerramos, mañana a primera hora lo reviso apenas abramos los locales. 😊';
 }
 
 function mensajeAgente(destino, datos) {
