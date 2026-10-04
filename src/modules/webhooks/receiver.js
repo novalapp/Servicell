@@ -18,13 +18,15 @@ const PANEL_KEY = process.env.PANEL_KEY;
 const CLIENT_ID = 'c37d2508-c9d1-422d-9fef-23901bc51145';
 const CHANNEL_ID = '18e8df74-2ed5-415b-ac84-2b043eebac7b';
 
-// Asesora que recibe los casos de pago
-const AGENT_PHONE = '573227831687';   // con 57 al inicio, sin espacios
-const AGENT_NAME = 'Adriana';
-const AGENT_DISPLAY = '322 783 1687'; // como se le muestra al cliente
-
-// Agente 2: recibe consultas que no son de Adriana (descuentos, SIM, etc.)
+// Número principal del equipo: recibe TODOS los avisos (pedidos,
+// consultas, casos de garantía, fotos) y es el único autorizado a
+// mandarle comandos al bot ("casos", cerrar un caso, etc.). Nunca se
+// le da este número a un cliente — todo se resuelve en el mismo chat.
 const AGENTE2_PHONE = '573143334860'; // con 57 al inicio, sin espacios
+
+// Copia de todos los avisos de arriba, para que esté al tanto sin
+// tener que responder — no es un número autorizado a mandar comandos.
+const COPIA_PHONE = '573207679813'; // Duvan, con 57 al inicio, sin espacios
 
 // Saludo de confianza: se manda UNA SOLA VEZ, en el primer mensaje de
 // cada contacto nuevo, antes de que la IA entre a la conversación
@@ -259,7 +261,7 @@ function sacarTextoPendiente(destino) {
 }
 
 async function handleMessage(destino, text, imagenId = null) {
-  if (destino === AGENT_PHONE) {
+  if (destino === AGENTE2_PHONE) {
     await handleAgente(text);
     return;
   }
@@ -283,10 +285,10 @@ async function handleMessage(destino, text, imagenId = null) {
       textoParaGuardar = text ? `[foto] ${text}` : '[el cliente envió una foto]';
       console.log('📷 Foto descargada y lista para la IA');
 
-      // Copia SIEMPRE a Natalia, sin depender de que la IA decida
+      // Copia SIEMPRE al equipo, sin depender de que la IA decida
       // avisar — así ve cualquier foto que mande un cliente, no solo
       // las que la IA clasifica como comprobante o preaprobado.
-      copiaFotoSiempreParaNatalia(destino, imagenId, text).catch(err => {
+      copiaFotoSiempreAlEquipo(destino, imagenId, text).catch(err => {
         console.error('⚠️ No pude mandar la copia automática de la foto:', err.message);
       });
     } catch (err) {
@@ -428,10 +430,9 @@ async function handleMessage(destino, text, imagenId = null) {
         console.error(`🚨 Respuesta bloqueada (${riesgo}): ${textoLimpio}`);
         const mensajeSeguro = 'Dame un momento, ya te confirmo eso.';
         await sendMessage(destino, mensajeSeguro);
-        await copiaParaJefa(
-          `⚠️ RESPUESTA BLOQUEADA (${riesgo})`,
-          `La IA iba a responder esto, lo bloqueé antes de que le llegara al cliente:\n\n"${textoLimpio}"\n\nEntra al panel y respóndele tú.`
-        );
+        const textoBloqueo = `La IA iba a responder esto, lo bloqueé antes de que le llegara al cliente:\n\n"${textoLimpio}"\n\nEntra al panel y respóndele tú.`;
+        await sendMessage(AGENTE2_PHONE, `⚠️ RESPUESTA BLOQUEADA (${riesgo})\n\n${textoBloqueo}`);
+        await copiaParaDuvan(`⚠️ RESPUESTA BLOQUEADA (${riesgo})`, textoBloqueo);
         if (conversation?.id) {
           await supabase
             .from('conversations')
@@ -613,7 +614,7 @@ async function handleAgente(text) {
     }
     if (limpio === 'no') {
       cierrePendiente = null;
-      await sendMessage(AGENT_PHONE, 'Listo, no cerré nada 👌');
+      await sendMessage(AGENTE2_PHONE, 'Listo, no cerré nada 👌');
       return;
     }
     cierrePendiente = null;
@@ -630,10 +631,10 @@ async function handleAgente(text) {
     console.log('📋 La asesora pidió los casos pendientes');
     try {
       const casos = await getCasosPendientes();
-      await sendMessage(AGENT_PHONE, mensajeCasos(casos));
+      await sendMessage(AGENTE2_PHONE, mensajeCasos(casos));
     } catch (err) {
       console.error('⚠️ Error consultando casos:', err.message);
-      await sendMessage(AGENT_PHONE, 'No pude consultar los casos en este momento. Intenta de nuevo en un minuto.');
+      await sendMessage(AGENTE2_PHONE, 'No pude consultar los casos en este momento. Intenta de nuevo en un minuto.');
     }
     return;
   }
@@ -646,7 +647,7 @@ async function pedirConfirmacionCierre(numero) {
     const casos = await getCasosPendientes();
 
     if (numero < 1 || numero > casos.length) {
-      await sendMessage(AGENT_PHONE, `No existe el caso ${numero}. Escribe "casos" para ver la lista.`);
+      await sendMessage(AGENTE2_PHONE, `No existe el caso ${numero}. Escribe "casos" para ver la lista.`);
       return;
     }
 
@@ -656,12 +657,12 @@ async function pedirConfirmacionCierre(numero) {
     cierrePendiente = { id: caso.id, nombre };
 
     await sendMessage(
-      AGENT_PHONE,
+      AGENTE2_PHONE,
       `¿Cierro el caso de ${nombre}?\n${caso.summary || ''}\n\nResponde "si" para confirmar.`
     );
   } catch (err) {
     console.error('⚠️ Error preparando cierre:', err.message);
-    await sendMessage(AGENT_PHONE, 'No pude consultar los casos en este momento.');
+    await sendMessage(AGENTE2_PHONE, 'No pude consultar los casos en este momento.');
   }
 }
 
@@ -688,11 +689,11 @@ async function confirmarCierre() {
       ? 'No quedan casos pendientes 👌'
       : `Quedan ${restantes.length} pendiente${restantes.length === 1 ? '' : 's'}.`;
 
-    await sendMessage(AGENT_PHONE, `✅ Caso de ${caso.nombre} cerrado.\n${texto}`);
+    await sendMessage(AGENTE2_PHONE, `✅ Caso de ${caso.nombre} cerrado.\n${texto}`);
     console.log(`✅ Caso cerrado: ${caso.nombre}`);
   } catch (err) {
     console.error('⚠️ Error cerrando el caso:', err.message);
-    await sendMessage(AGENT_PHONE, 'No pude cerrar el caso. Intenta de nuevo en un minuto.');
+    await sendMessage(AGENTE2_PHONE, 'No pude cerrar el caso. Intenta de nuevo en un minuto.');
   }
 }
 
@@ -759,7 +760,7 @@ async function registrarAviso(tipo, contenido, conversationId, enviado, error) {
       client_id: CLIENT_ID,
       conversation_id: conversationId || null,
       tipo: tipo,
-      destinatario: AGENT_PHONE,
+      destinatario: AGENTE2_PHONE,
       contenido: contenido,
       enviado: enviado,
       error: error || null
@@ -851,6 +852,7 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
     await sendMessage(AGENTE2_PHONE, texto);
     console.log(`🟣 Aviso a agente 2: ${asunto}`);
     await registrarAviso('agente2', texto, conversation?.id, true, null);
+    await copiaParaDuvan('Consulta', texto);
 
     const resumen = `Agente 2: ${asunto || 'sin clasificar'}${detalle ? ` — ${detalle}` : ''}`;
 
@@ -873,13 +875,13 @@ async function avisarAgente2(motivo, destino, contactId, conversation) {
   }
 }
 
-// Copia, a tu número, de un aviso que ya se le mandó a Adriana —
-// para que puedas hacerle seguimiento sin estar pendiente del panel
-async function copiaParaJefa(etiqueta, texto) {
+// Copia a Duvan de un aviso que ya le llegó al número principal —
+// para que esté al tanto, sin que tenga que responder desde aquí
+async function copiaParaDuvan(etiqueta, texto) {
   try {
-    await sendMessage(AGENTE2_PHONE, `🔴 COPIA (${etiqueta}) — esto ya le llegó a ${AGENT_NAME}, no hace falta que respondas aquí:\n\n${texto}`);
+    await sendMessage(COPIA_PHONE, `🔴 COPIA (${etiqueta}) — esto ya se avisó, no hace falta que respondas aquí:\n\n${texto}`);
   } catch (err) {
-    console.error('⚠️ No pude mandar la copia a la jefa:', err.message);
+    console.error('⚠️ No pude mandar la copia a Duvan:', err.message);
   }
 }
 
@@ -914,10 +916,10 @@ async function avisarAsesora(motivo, destino, contactId, conversation) {
       : '\nEntra al panel, silencia el chat si hace falta y respóndele.');
 
     const textoAviso = lineas.join('\n');
-    await sendMessage(AGENT_PHONE, textoAviso);
-    console.log(`🔔 Aviso de consulta enviado a ${AGENT_NAME}: ${asunto}`);
+    await sendMessage(AGENTE2_PHONE, textoAviso);
+    console.log(`🔔 Aviso de consulta enviado: ${asunto}`);
     await registrarAviso('consulta', textoAviso, conversation?.id, true, null);
-    await copiaParaJefa('Consulta', textoAviso);
+    await copiaParaDuvan('Consulta', textoAviso);
 
     const resumen = `Consulta: ${asunto || 'sin clasificar'}${nombre ? ` — ${nombre}` : ''}`;
 
@@ -1135,7 +1137,7 @@ function mencionaPlanRetoma(texto) {
 // ¿La respuesta menciona el número de la asesora, en cualquier formato?
 function mencionaAsesora(texto) {
   const soloDigitos = String(texto || '').replace(/\D/g, '');
-  if (soloDigitos.includes(AGENT_PHONE.slice(2))) return true;
+  if (soloDigitos.includes(AGENTE2_PHONE.slice(2))) return true;
 
   // Frases de flujos que deberían traer marca [ASESORA:...] pero a
   // veces la IA las dice sin ponerla
@@ -1197,10 +1199,10 @@ async function cerrarVenta(destino, contactId, conversation, datos) {
 
   const textoPedido = mensajeAgente(destino, datos);
   try {
-    await sendMessage(AGENT_PHONE, textoPedido);
-    console.log(`🔔 Aviso enviado a ${AGENT_NAME}`);
+    await sendMessage(AGENTE2_PHONE, textoPedido);
+    console.log('🔔 Aviso de pedido enviado');
     await registrarAviso('pedido', textoPedido, conversation?.id, true, null);
-    await copiaParaJefa('Pedido', textoPedido);
+    await copiaParaDuvan('Pedido', textoPedido);
   } catch (err) {
     console.error('⚠️ NO SE PUDO AVISAR A LA ASESORA:', err.message);
     await registrarAviso('pedido', textoPedido, conversation?.id, false, err.message);
@@ -1317,13 +1319,13 @@ function mensajeTraspaso(datos, atencion) {
   let cierre;
 
   if (atencion.estado === 'abierto') {
-    cuando = `En unos minutos te escribe *${AGENT_NAME}*, de nuestra área de ventas, desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
-    cierre = '¡Gracias por tu compra! Quedas atento que ya te escribe 🙌';
+    cuando = 'En unos minutos seguimos por acá mismo con el pago y el envío 😊';
+    cierre = '¡Gracias por tu compra! Quedas atento por este chat 🙌';
   } else {
     const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
     const hora = formatHora(atencion.apertura);
-    cuando = `Como estamos fuera del horario de atención, nuestra asesora te escribirá *${dia} a partir de las ${hora}*. Se llama *${AGENT_NAME}* y te escribe desde el *${AGENT_DISPLAY}*. No te asustes cuando te llegue de otro número, es parte del proceso 😊`;
-    cierre = '¡Gracias por tu compra! Quedas atento a su mensaje 🙌';
+    cuando = `Como estamos fuera del horario de atención, seguimos *${dia} a partir de las ${hora}*, por este mismo chat 😊`;
+    cierre = '¡Gracias por tu compra! Quedas atento por este chat 🙌';
   }
 
   return `¡Perfecto! Tu pedido ya quedó registrado:
@@ -1332,7 +1334,7 @@ ${resumen}
 
 ${cuando}
 
-Ella ya tiene todos tus datos, así que te da la información de pago y te confirma el envío.
+Ya tenemos todos tus datos, así que por acá mismo te damos la información de pago y te confirmamos el envío.
 
 ${cierre}`;
 }
@@ -1372,15 +1374,13 @@ function mensajeYaEstaConVentas() {
   const atencion = estadoAtencion();
 
   if (atencion.estado === 'abierto') {
-    return `Ya estás con nuestra área de ventas 😊 ${AGENT_NAME} te ayuda por ese chat con el pago y el envío.
-
-Si aún no te ha escrito, puedes buscarla en el ${AGENT_DISPLAY}.`;
+    return 'Ya estás con nuestra área de ventas 😊 Seguimos por este mismo chat con el pago y el envío.';
   }
 
   const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
   const hora = formatHora(atencion.apertura);
 
-  return `Tu pedido ya quedó registrado 😊 ${AGENT_NAME}, de nuestra área de ventas, te escribe ${dia} a partir de las ${hora} desde el ${AGENT_DISPLAY}.`;
+  return `Tu pedido ya quedó registrado 😊 Seguimos por este mismo chat ${dia} a partir de las ${hora}.`;
 }
 
 function mensajeYaEstaConAgente2() {
@@ -1519,10 +1519,10 @@ async function sendMessage(destino, body) {
   return enviarAMeta(destino, { type: 'text', text: { body: body } }, 'texto');
 }
 
-// Manda SIEMPRE una copia de cualquier foto que mande un cliente a
-// Natalia (AGENTE2_PHONE), sin depender de que la IA la clasifique
+// Manda SIEMPRE una copia de cualquier foto que mande un cliente al
+// número principal y a Duvan, sin depender de que la IA la clasifique
 // como comprobante, preaprobado o cualquier otro caso puntual.
-async function copiaFotoSiempreParaNatalia(destino, mediaId, textoCliente) {
+async function copiaFotoSiempreAlEquipo(destino, mediaId, textoCliente) {
   const wa = esTelefono(destino) ? paraWaMe(destino) : null;
   const lineas = ['📷 Foto de un cliente (copia automática)'];
   if (textoCliente) lineas.push(`📝 "${textoCliente}"`);
@@ -1531,6 +1531,8 @@ async function copiaFotoSiempreParaNatalia(destino, mediaId, textoCliente) {
 
   await sendMessage(AGENTE2_PHONE, lineas.join('\n'));
   await enviarAMeta(AGENTE2_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
+  await copiaParaDuvan('Foto', lineas.join('\n'));
+  await enviarAMeta(COPIA_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
 }
 
 // Le reenvía a la asesora una foto con el contexto del cliente
@@ -1551,14 +1553,14 @@ async function reenviarAsesora(mediaId, motivo, destino) {
     lineas.push('\nRevisa la foto que sigue 👇');
 
     const textoFoto = lineas.join('\n');
-    await sendMessage(AGENT_PHONE, textoFoto);
-    await enviarAMeta(AGENT_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
-    console.log(`📤 Foto reenviada a ${AGENT_NAME}: ${asunto}`);
+    await sendMessage(AGENTE2_PHONE, textoFoto);
+    await enviarAMeta(AGENTE2_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
+    console.log(`📤 Foto reenviada: ${asunto}`);
 
     const tipo = /preaprob/i.test(asunto) ? 'preaprobado' : 'comprobante';
     await registrarAviso(tipo, textoFoto, null, true, null);
-    await copiaParaJefa('Foto para Adriana', textoFoto);
-    await enviarAMeta(AGENTE2_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
+    await copiaParaDuvan('Foto', textoFoto);
+    await enviarAMeta(COPIA_PHONE, { type: 'image', image: { id: mediaId } }, 'imagen');
   } catch (err) {
     console.error('⚠️ No pude reenviar la foto a la asesora:', err.message);
   }
