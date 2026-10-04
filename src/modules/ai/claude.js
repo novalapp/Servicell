@@ -263,7 +263,7 @@ REGLAS:
 
     // La hora real, para que no tenga que adivinar si está abierto o
     // cerrado (por ejemplo, al confirmar cuándo se revisa un color).
-    const horaActual = `HORA ACTUAL: ${fraseEstadoAtencion()}`;
+    const horaActual = `HORA ACTUAL: ${await fraseEstadoAtencion(clientId)}`;
 
     const system = [
       { type: "text", text: parteEstable, cache_control: { type: "ephemeral", ttl: "1h" } }

@@ -1,6 +1,12 @@
 // Horario de atención de Servicell, compartido entre el webhook
 // (mensajes fijos con hora correcta) y la IA (para que sepa si está
 // abierto o cerrado sin tener que adivinar la hora).
+//
+// También revisa un interruptor manual (agent_config.forzar_disponible)
+// para los momentos en que el equipo SÍ puede responder aunque esté
+// fuera del horario fijo — lo prenden/apagan desde el panel.
+
+const supabase = require('../config/database');
 
 const HORARIO_SEMANA  = { apertura: 570, cierre: 1140 }; // lunes a sábado
 const HORARIO_DOMINGO = { apertura: 600, cierre: 960 };  // domingos y festivos
@@ -60,7 +66,33 @@ function formatHora(minutos) {
   return m === 0 ? `${h12}${sufijo}` : `${h12}:${String(m).padStart(2, '0')}${sufijo}`;
 }
 
-function estadoAtencion() {
+// Interruptor manual: si está prendido, el equipo dijo que SÍ puede
+// responder ahora mismo, sin importar el horario fijo. Si falla la
+// consulta por lo que sea, sigue con el horario normal — nunca debe
+// tumbar un mensaje por esto.
+async function estaForzadoDisponible(clientId) {
+  if (!clientId) return false;
+  try {
+    const { data, error } = await supabase
+      .from('agent_config')
+      .select('forzar_disponible')
+      .eq('client_id', clientId)
+      .eq('active', true)
+      .limit(1);
+
+    if (error) throw new Error(error.message);
+    return !!(data && data[0] && data[0].forzar_disponible);
+  } catch (err) {
+    console.error('⚠️ No pude revisar forzar_disponible, sigo con el horario normal:', err.message);
+    return false;
+  }
+}
+
+async function estadoAtencion(clientId) {
+  if (await estaForzadoDisponible(clientId)) {
+    return { estado: 'abierto', apertura: horarioDe(0).apertura, forzado: true };
+  }
+
   const { hora, minuto } = ahoraColombia();
   const ahora = hora * 60 + minuto;
   const hoy = horarioDe(0);
@@ -73,8 +105,8 @@ function estadoAtencion() {
 }
 
 // Frase corta para inyectarle a la IA, sin que tenga que adivinar la hora.
-function fraseEstadoAtencion() {
-  const atencion = estadoAtencion();
+async function fraseEstadoAtencion(clientId) {
+  const atencion = await estadoAtencion(clientId);
   if (atencion.estado === 'abierto') return 'Estamos abiertos ahora mismo.';
   const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
   return `Estamos cerrados en este momento. Abrimos ${dia} a partir de las ${formatHora(atencion.apertura)}.`;

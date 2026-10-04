@@ -255,7 +255,7 @@ async function responderNoTexto(destino, tipo, mediaId = null) {
       }
     }
 
-    const textoConfirmacion = mensajeAudioConfirmando();
+    const textoConfirmacion = await mensajeAudioConfirmando();
     await sendMessage(destino, textoConfirmacion);
     if (conversation?.id) {
       saveMessage(conversation.id, contactId, 'agent', textoConfirmacion)
@@ -458,7 +458,7 @@ async function handleMessage(destino, text, imagenId = null) {
         ? mensajeYaEstaConAgente2()
         : esRevisionBloqueada
           ? mensajeYaEstaEnRevision()
-          : mensajeYaEstaConVentas();
+          : await mensajeYaEstaConVentas();
       await sendMessage(destino, mensaje);
       return;
     }
@@ -521,7 +521,7 @@ async function handleMessage(destino, text, imagenId = null) {
     }
     // El mensaje de plan retoma queda fijo y con horario correcto, sin
     // depender de que la IA lo redacte bien cada vez
-    const textoLimpio = esPlanRetoma ? mensajePlanRetomaConfirmando() : textoGenerado;
+    const textoLimpio = esPlanRetoma ? await mensajePlanRetomaConfirmando() : textoGenerado;
 
     // La pausa se aplica siempre aquí, sin importar por cuál camino se
     // detectó el plan retoma — así no depende de que avisarAgente2 o
@@ -1331,7 +1331,7 @@ async function redAgente2PlanRetoma(texto, destino, contactId, conversation) {
 }
 
 async function cerrarVenta(destino, contactId, conversation, datos) {
-  const atencion = estadoAtencion();
+  const atencion = await estadoAtencion(CLIENT_ID);
   console.log(`🕐 Estado de atención: ${atencion.estado}`);
 
   const mensajeCliente = mensajeTraspaso(datos, atencion);
@@ -1481,8 +1481,8 @@ ${cierre}`;
 
 // Mensaje fijo para cuando se escala un caso de plan retoma — con
 // horario correcto, sin depender de que la IA lo redacte bien
-function mensajePlanRetomaConfirmando() {
-  const atencion = estadoAtencion();
+async function mensajePlanRetomaConfirmando() {
+  const atencion = await estadoAtencion(CLIENT_ID);
 
   if (atencion.estado === 'abierto') {
     return 'Listo, danos un momento para evaluarlo. Te confirmamos por este mismo chat en cuanto lo tengamos.';
@@ -1496,8 +1496,8 @@ function mensajePlanRetomaConfirmando() {
 // Mensaje fijo de acuse de recibo cuando llega una nota de voz — se
 // manda UNA sola vez (la primera vez que se pausa la conversación),
 // con el horario correcto según cuándo llegó.
-function mensajeAudioConfirmando() {
-  const atencion = estadoAtencion();
+async function mensajeAudioConfirmando() {
+  const atencion = await estadoAtencion(CLIENT_ID);
   const hora = formatHora(atencion.apertura);
 
   if (atencion.estado === 'abierto') {
@@ -1526,8 +1526,8 @@ function mensajeAgente(destino, datos) {
 💳 ${datos.medio_pago || 'Por definir'}${lineaChat}`;
 }
 
-function mensajeYaEstaConVentas() {
-  const atencion = estadoAtencion();
+async function mensajeYaEstaConVentas() {
+  const atencion = await estadoAtencion(CLIENT_ID);
 
   if (atencion.estado === 'abierto') {
     return 'Ya estás con nuestra área de ventas 😊 Seguimos por este mismo chat con el pago y el envío.';
@@ -1983,6 +1983,38 @@ router.post('/api/panel/modo', async (req, res) => {
     return res.json({ ok: true, modo });
   } catch (err) {
     console.error('❌ Error en /api/panel/modo:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/panel/disponibilidad   { disponible: true | false }
+// Interruptor global (no es por conversación puntual, es para todo el
+// negocio): cuando está prendido, TODOS los mensajes que dependen del
+// horario (cierre de venta, plan retoma, nota de voz) tratan la tienda
+// como abierta, sin importar la hora real. Se apaga igual, a mano,
+// desde el panel, cuando ya no estén disponibles.
+router.post('/api/panel/disponibilidad', async (req, res) => {
+  if (!panelAutorizado(req)) return res.status(401).json({ error: 'No autorizado' });
+
+  const { disponible } = req.body || {};
+
+  if (typeof disponible !== 'boolean') {
+    return res.status(400).json({ error: 'disponible debe ser true o false' });
+  }
+
+  try {
+    const { error } = await supabase
+      .from('agent_config')
+      .update({ forzar_disponible: disponible })
+      .eq('client_id', CLIENT_ID)
+      .eq('active', true);
+
+    if (error) throw new Error(error.message);
+
+    console.log(`🎛️ forzar_disponible pasó a ${disponible}`);
+    return res.json({ ok: true, disponible });
+  } catch (err) {
+    console.error('❌ Error en /api/panel/disponibilidad:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });
