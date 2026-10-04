@@ -206,7 +206,8 @@ async function responderNoTexto(destino, tipo, mediaId = null) {
   // además de dejar el registro guardado para que aparezca en el
   // historial del chat.
   if (esAudio) {
-    console.log(`🎙️ Nota de voz de ${destino} — pasa a revisión humana en silencio`);
+    const yaEstaConHumano = conversation?.handled_by === 'human';
+    console.log(`🎙️ Nota de voz de ${destino}${yaEstaConHumano ? ' — ya estaba pausada, se guarda en silencio' : ' — primera vez, se pausa y se avisa'}`);
 
     if (conversation?.id) {
       let contenidoGuardado = '[nota de voz]';
@@ -221,9 +222,24 @@ async function responderNoTexto(destino, tipo, mediaId = null) {
         .catch(err => console.error('⚠️ No se guardó la nota de voz:', err.message));
     }
 
-    const yaEstaConHumano = conversation?.handled_by === 'human';
+    // El audio real se reenvía siempre (aunque ya esté pausada) — así
+    // quien revise el caso puede escuchar TODAS las notas de voz que
+    // mandó el cliente, no solo la primera. El panel no reproduce
+    // archivos todavía, por eso se manda por WhatsApp de verdad.
+    if (mediaId) {
+      await enviarAMeta(AGENTE2_PHONE, { type: 'audio', audio: { id: mediaId } }, 'audio (nota de voz del cliente)');
+      await enviarAMeta(COPIA_PHONE, { type: 'audio', audio: { id: mediaId } }, 'audio (nota de voz del cliente)');
+    } else {
+      console.error('⚠️ No vino mediaId para la nota de voz — no se pudo reenviar el audio real');
+    }
 
-    if (!yaEstaConHumano && conversation?.id) {
+    // Si ya estaba pausada por un audio anterior: silencio total, ni
+    // mensaje al cliente ni aviso repetido — solo se guarda y reenvía
+    // lo de arriba. Vuelve a responder solo cuando la reactiven desde
+    // el panel.
+    if (yaEstaConHumano) return;
+
+    if (conversation?.id) {
       try {
         await supabase
           .from('conversations')
@@ -239,19 +255,19 @@ async function responderNoTexto(destino, tipo, mediaId = null) {
       }
     }
 
-    if (!yaEstaConHumano && puedeAvisar(destino)) {
-      const textoAviso = `🎙️ NOTA DE VOZ — el cliente mandó un audio\n📱 ${destino}\n\nEscúchalo abajo. Entra al panel, silencia el chat si hace falta y respóndele.`;
+    const textoConfirmacion = mensajeAudioConfirmando();
+    await sendMessage(destino, textoConfirmacion);
+    if (conversation?.id) {
+      saveMessage(conversation.id, contactId, 'agent', textoConfirmacion)
+        .catch(err => console.error('⚠️ No se guardó el acuse de recibo:', err.message));
+    }
+
+    if (puedeAvisar(destino)) {
+      const textoAviso = `🎙️ NOTA DE VOZ — el cliente mandó un audio\n📱 ${destino}\n\nEscúchalo abajo. El bot queda en pausa en este chat hasta que lo reactives desde el panel.`;
       await sendMessage(AGENTE2_PHONE, textoAviso);
       await registrarAviso('nota_de_voz', textoAviso, conversation?.id, true, null);
       await copiaParaDuvan('Nota de voz', textoAviso);
       avisoYaEnviado(destino);
-    }
-
-    if (mediaId) {
-      await enviarAMeta(AGENTE2_PHONE, { type: 'audio', audio: { id: mediaId } }, 'audio (nota de voz del cliente)');
-      await enviarAMeta(COPIA_PHONE, { type: 'audio', audio: { id: mediaId } }, 'audio (nota de voz del cliente)');
-    } else {
-      console.error('⚠️ No vino mediaId para la nota de voz — no se pudo reenviar el audio real');
     }
 
     return;
@@ -426,6 +442,16 @@ async function handleMessage(destino, text, imagenId = null) {
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
       await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
+
+      // Pausada por una nota de voz: silencio total hasta que alguien
+      // la reactive desde el panel — ni un mensaje fijo de "en un
+      // momento te ayudamos", nada. Se guarda y ya.
+      const esNotaDeVoz = String(conversation.summary || '').startsWith('Nota de voz');
+      if (esNotaDeVoz) {
+        console.log('🎙️ Pausada por nota de voz — no se repite ningún mensaje');
+        return;
+      }
+
       const esAgente2 = String(conversation.summary || '').startsWith('Agente 2:');
       const esRevisionBloqueada = String(conversation.summary || '').startsWith('Respuesta bloqueada:');
       const mensaje = esAgente2
@@ -1465,6 +1491,22 @@ function mensajePlanRetomaConfirmando() {
   const dia = (atencion.estado === 'temprano') ? 'hoy' : 'mañana';
   const hora = formatHora(atencion.apertura);
   return `Listo, ya quedó registrado. Como estamos fuera del horario de atención, te confirmamos *${dia} a partir de las ${hora}* por este mismo chat.`;
+}
+
+// Mensaje fijo de acuse de recibo cuando llega una nota de voz — se
+// manda UNA sola vez (la primera vez que se pausa la conversación),
+// con el horario correcto según cuándo llegó.
+function mensajeAudioConfirmando() {
+  const atencion = estadoAtencion();
+  const hora = formatHora(atencion.apertura);
+
+  if (atencion.estado === 'abierto') {
+    return 'Ya te escucho y te respondo, dame un momento.';
+  }
+  if (atencion.estado === 'temprano') {
+    return `Aún no hemos abierto, pero más o menos a partir de las ${hora} escucho tu audio y te respondo 🙌`;
+  }
+  return `Ya cerramos por hoy 😊 Mañana a las ${hora} escucho tu audio y te respondo.`;
 }
 
 function mensajeAgente(destino, datos) {
