@@ -110,7 +110,10 @@ router.post('/webhook', async (req, res) => {
         if (message.type !== 'text') {
           sacarTextoPendiente(destino); // no se puede combinar con esto, se pierde igual
           console.log(`🎙️ Mensaje tipo "${message.type}" de ${destino}`);
-          responderNoTexto(destino, message.type).catch(err => {
+          // Meta manda el audio como message.audio o message.voice según
+          // el caso — el mediaId hace falta para poder reenviarlo real.
+          const mediaId = message.audio?.id || message.voice?.id || null;
+          responderNoTexto(destino, message.type, mediaId).catch(err => {
             console.error('Error respondiendo a no-texto:', err);
           });
           return;
@@ -164,23 +167,18 @@ function haceCuanto(fechaISO) {
 // ---------------------------------------------------------------
 
 // Responde cuando llega algo que no es texto (audio, foto, sticker...)
-async function responderNoTexto(destino, tipo) {
+async function responderNoTexto(destino, tipo, mediaId = null) {
   let contactId = null;
   let conversation = null;
+  let contactoNuevo = false;
 
   try {
-    let contactoNuevo;
     [contactId, contactoNuevo] = await getOrCreateContact(destino);
     conversation = await getOrCreateConversation(contactId);
 
     if (contactoNuevo) {
       console.log('💙 Contacto nuevo — mandando saludo de confianza');
       await enviarSaludoConfianza(destino, conversation, contactId);
-      return;
-    }
-
-    if (conversation.handled_by === 'human') {
-      console.log('🤐 Conversación con la asesora, no se responde');
       return;
     }
   } catch (err) {
@@ -194,10 +192,23 @@ async function responderNoTexto(destino, tipo) {
   // escucha y responde desde ahí. El bot no le dice nada al cliente,
   // ni le pide que lo escriba (la IA en sí sigue sin poder
   // transcribir audio, pero eso ya no es un problema del cliente).
+  //
+  // Igual que con las fotos: el panel no reproduce archivos, así que
+  // el audio real se reenvía por WhatsApp al número principal (y
+  // copia a Duvan) para que alguien lo pueda escuchar de verdad —
+  // además de dejar el registro guardado para que aparezca en el
+  // historial del chat.
   if (esAudio) {
     console.log(`🎙️ Nota de voz de ${destino} — pasa a revisión humana en silencio`);
 
     if (conversation?.id) {
+      saveMessage(conversation.id, contactId, 'contact', '[nota de voz]', 'audio')
+        .catch(err => console.error('⚠️ No se guardó la nota de voz:', err.message));
+    }
+
+    const yaEstaConHumano = conversation?.handled_by === 'human';
+
+    if (!yaEstaConHumano && conversation?.id) {
       try {
         await supabase
           .from('conversations')
@@ -213,13 +224,26 @@ async function responderNoTexto(destino, tipo) {
       }
     }
 
-    if (puedeAvisar(destino)) {
-      const textoAviso = `🎙️ NOTA DE VOZ — el cliente mandó un audio, escúchalo en el panel\n📱 ${destino}\n\nEntra al panel, silencia el chat si hace falta y respóndele.`;
+    if (!yaEstaConHumano && puedeAvisar(destino)) {
+      const textoAviso = `🎙️ NOTA DE VOZ — el cliente mandó un audio\n📱 ${destino}\n\nEscúchalo abajo. Entra al panel, silencia el chat si hace falta y respóndele.`;
       await sendMessage(AGENTE2_PHONE, textoAviso);
       await registrarAviso('nota_de_voz', textoAviso, conversation?.id, true, null);
       await copiaParaDuvan('Nota de voz', textoAviso);
       avisoYaEnviado(destino);
     }
+
+    if (mediaId) {
+      await enviarAMeta(AGENTE2_PHONE, { type: 'audio', audio: { id: mediaId } }, 'audio (nota de voz del cliente)');
+      await enviarAMeta(COPIA_PHONE, { type: 'audio', audio: { id: mediaId } }, 'audio (nota de voz del cliente)');
+    } else {
+      console.error('⚠️ No vino mediaId para la nota de voz — no se pudo reenviar el audio real');
+    }
+
+    return;
+  }
+
+  if (conversation?.handled_by === 'human') {
+    console.log('🤐 Conversación con la asesora, no se responde');
     return;
   }
 
