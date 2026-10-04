@@ -209,7 +209,15 @@ async function responderNoTexto(destino, tipo, mediaId = null) {
     console.log(`🎙️ Nota de voz de ${destino} — pasa a revisión humana en silencio`);
 
     if (conversation?.id) {
-      saveMessage(conversation.id, contactId, 'contact', '[nota de voz]', 'audio')
+      let contenidoGuardado = '[nota de voz]';
+      if (mediaId) {
+        try {
+          contenidoGuardado = await descargarYSubirAudio(mediaId);
+        } catch (err) {
+          console.error('⚠️ No se pudo subir la nota de voz al storage, se guarda solo como texto:', err.message);
+        }
+      }
+      saveMessage(conversation.id, contactId, 'contact', contenidoGuardado, 'audio')
         .catch(err => console.error('⚠️ No se guardó la nota de voz:', err.message));
     }
 
@@ -280,6 +288,46 @@ async function descargarImagen(mediaId) {
   if (buffer.length > 4500000) throw new Error('la foto pesa demasiado');
 
   return { base64: buffer.toString('base64'), mime: info.mime_type };
+}
+
+// Descarga una nota de voz de WhatsApp y la sube al mismo bucket que
+// usa el panel para sus propios audios, para que quede con un link
+// público y reproducible — así el panel puede mostrar un reproductor
+// en vez de solo texto, el día que agregue esa parte.
+const EXTENSION_POR_MIME_AUDIO = {
+  'audio/ogg': 'ogg',
+  'audio/ogg; codecs=opus': 'ogg',
+  'audio/opus': 'opus',
+  'audio/aac': 'aac',
+  'audio/mp4': 'm4a',
+  'audio/mpeg': 'mp3',
+  'audio/amr': 'amr'
+};
+
+async function descargarYSubirAudio(mediaId) {
+  const cabeceras = { Authorization: `Bearer ${META_ACCESS_TOKEN}` };
+
+  const infoRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, { headers: cabeceras });
+  const info = await infoRes.json();
+  if (!info.url) throw new Error(`Meta no dio URL: ${JSON.stringify(info)}`);
+
+  const binRes = await fetch(info.url, { headers: cabeceras });
+  const buffer = Buffer.from(await binRes.arrayBuffer());
+
+  const mimeBase = String(info.mime_type || '').split(';')[0].trim();
+  const extension = EXTENSION_POR_MIME_AUDIO[info.mime_type] || EXTENSION_POR_MIME_AUDIO[mimeBase] || 'ogg';
+  const rutaStorage = `entrante-${mediaId}.${extension}`;
+
+  const { error: errorSubida } = await supabase.storage
+    .from('servicell-chat-audio')
+    .upload(rutaStorage, buffer, { contentType: mimeBase || 'audio/ogg' });
+
+  if (errorSubida) throw new Error(`No se pudo subir la nota de voz: ${errorSubida.message}`);
+
+  const { data: urlData } = supabase.storage.from('servicell-chat-audio').getPublicUrl(rutaStorage);
+  if (!urlData?.publicUrl) throw new Error('No se pudo obtener la URL pública de la nota de voz');
+
+  return urlData.publicUrl;
 }
 
 // ---------------------------------------------------------------
