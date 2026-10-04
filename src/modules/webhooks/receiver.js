@@ -165,9 +165,13 @@ function haceCuanto(fechaISO) {
 
 // Responde cuando llega algo que no es texto (audio, foto, sticker...)
 async function responderNoTexto(destino, tipo) {
+  let contactId = null;
+  let conversation = null;
+
   try {
-    const [contactId, contactoNuevo] = await getOrCreateContact(destino);
-    const conversation = await getOrCreateConversation(contactId);
+    let contactoNuevo;
+    [contactId, contactoNuevo] = await getOrCreateContact(destino);
+    conversation = await getOrCreateConversation(contactId);
 
     if (contactoNuevo) {
       console.log('💙 Contacto nuevo — mandando saludo de confianza');
@@ -185,10 +189,41 @@ async function responderNoTexto(destino, tipo) {
 
   const esAudio = (tipo === 'audio' || tipo === 'voice');
 
-  const texto = esAudio
-    ? 'Disculpa, en este momento no puedo escucharte 🙏 ¿Me lo puedes escribir, por favor? Gracias 😊'
-    : 'Disculpa, no puedo abrir ese archivo por acá 🙈 ¿Me cuentas por escrito qué necesitas?';
+  // Las notas de voz pasan en silencio a un humano — el panel ya
+  // permite grabar y mandar audio, así que alguien del equipo la
+  // escucha y responde desde ahí. El bot no le dice nada al cliente,
+  // ni le pide que lo escriba (la IA en sí sigue sin poder
+  // transcribir audio, pero eso ya no es un problema del cliente).
+  if (esAudio) {
+    console.log(`🎙️ Nota de voz de ${destino} — pasa a revisión humana en silencio`);
 
+    if (conversation?.id) {
+      try {
+        await supabase
+          .from('conversations')
+          .update({
+            handled_by: 'human',
+            status: 'waiting_agent',
+            updated_at: new Date().toISOString(),
+            summary: 'Nota de voz del cliente — escuchar y responder en el panel'
+          })
+          .eq('id', conversation.id);
+      } catch (err) {
+        console.error('⚠️ No pude pausar la conversación por nota de voz:', err.message);
+      }
+    }
+
+    if (puedeAvisar(destino)) {
+      const textoAviso = `🎙️ NOTA DE VOZ — el cliente mandó un audio, escúchalo en el panel\n📱 ${destino}\n\nEntra al panel, silencia el chat si hace falta y respóndele.`;
+      await sendMessage(AGENTE2_PHONE, textoAviso);
+      await registrarAviso('nota_de_voz', textoAviso, conversation?.id, true, null);
+      await copiaParaDuvan('Nota de voz', textoAviso);
+      avisoYaEnviado(destino);
+    }
+    return;
+  }
+
+  const texto = 'Disculpa, no puedo abrir ese archivo por acá 🙈 ¿Me cuentas por escrito qué necesitas?';
   await sendMessage(destino, texto);
 }
 

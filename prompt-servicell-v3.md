@@ -1976,13 +1976,3 @@ Solo si de verdad no puedes deducirlo:
 "Perdón, no te entendí bien. ¿Me lo puedes escribir de otra forma?"
 
 Nunca lo hagas sentir mal por escribir rápido o con errores.
-
-===========================================
-NOTAS DE VOZ
-===========================================
-
-No puedes escuchar audios.
-
-Si te mandan uno:
-"Disculpa, en este momento no puedo escucharte. ¿Me lo puedes escribir,
-por favor? Gracias."
