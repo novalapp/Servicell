@@ -1457,14 +1457,14 @@ async function getOrCreateConversation(contactId) {
   return created[0];
 }
 
-async function saveMessage(conversationId, contactId, senderType, content) {
+async function saveMessage(conversationId, contactId, senderType, content, messageType = 'text') {
   const { error } = await supabase
     .from('messages')
     .insert([{
       conversation_id: conversationId,
       contact_id: contactId,
       sender_type: senderType,
-      message_type: 'text',
+      message_type: messageType,
       content: content
     }]);
 
@@ -1584,11 +1584,15 @@ async function enviarSaludoConfianza(destino, conversation, contactId) {
   }
 }
 
+// Devuelve { ok, data } — la mayoría de quienes la llaman no revisan
+// el resultado (mandan y siguen), pero /api/panel/enviar-audio sí
+// necesita saber si Meta rechazó el audio (ej. formato no soportado)
+// para no decirle al panel que se mandó cuando en realidad falló.
 async function enviarAMeta(destino, contenido, tipo) {
   try {
     if (!destino) {
       console.error(`❌ No hay destinatario para enviar ${tipo}`);
-      return;
+      return { ok: false, data: null };
     }
 
     const url = `https://graph.facebook.com/v19.0/${META_PHONE_NUMBER_ID}/messages`;
@@ -1619,11 +1623,14 @@ async function enviarAMeta(destino, contenido, tipo) {
 
     if (data.messages) {
       console.log(`✅ ${tipo} enviado a ${destino}`);
-    } else {
-      console.error(`❌ Error Meta al enviar ${tipo} a ${destino}:`, JSON.stringify(data));
+      return { ok: true, data };
     }
+
+    console.error(`❌ Error Meta al enviar ${tipo} a ${destino}:`, JSON.stringify(data));
+    return { ok: false, data };
   } catch (error) {
     console.error(`❌ Error enviando ${tipo}:`, error);
+    return { ok: false, data: null };
   }
 }
 
@@ -1676,6 +1683,69 @@ router.post('/api/panel/enviar', async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error('❌ Error en /api/panel/enviar:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/panel/enviar-audio   { conversationId, audioUrl }
+// Mismo patrón que /api/panel/enviar, pero manda un mensaje de audio
+// usando un link público en vez de subir/procesar el archivo acá.
+//
+// OJO — FORMATO: la API de WhatsApp (Meta Cloud API) solo acepta audio
+// en AAC, MP4, MPEG, AMR, o OGG (códec Opus). Un .webm grabado desde
+// Chrome/Android normalmente NO cumple eso — Meta lo va a rechazar, y
+// este endpoint va a devolver el error de Meta en vez de un falso
+// "ok: true". Si eso pasa seguido, hay que convertir el archivo (ej. a
+// .ogg/opus) antes de mandarlo — no está hecho todavía, confirmar con
+// pruebas reales antes de dar esto por terminado.
+router.post('/api/panel/enviar-audio', async (req, res) => {
+  if (!panelAutorizado(req)) return res.status(401).json({ error: 'No autorizado' });
+
+  const { conversationId, audioUrl } = req.body || {};
+
+  if (!conversationId || !audioUrl || !String(audioUrl).trim()) {
+    return res.status(400).json({ error: 'Faltan conversationId o audioUrl' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('id, contact_id, contacts(external_id)')
+      .eq('client_id', CLIENT_ID)
+      .eq('id', conversationId)
+      .limit(1);
+
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Conversación no encontrada' });
+    }
+
+    const conv = data[0];
+    const destino = conv.contacts?.external_id;
+
+    if (!destino) return res.status(400).json({ error: 'El contacto no tiene identificador' });
+
+    const resultado = await enviarAMeta(destino, { type: 'audio', audio: { link: audioUrl } }, 'audio');
+
+    if (!resultado.ok) {
+      console.error('❌ Error en /api/panel/enviar-audio (Meta rechazó el audio):', JSON.stringify(resultado.data));
+      return res.status(502).json({
+        error: 'WhatsApp rechazó el audio — probablemente el formato (revisa que sea AAC, MP4, MPEG, AMR u OGG/Opus)',
+        detalleMeta: resultado.data
+      });
+    }
+
+    await saveMessage(conv.id, conv.contact_id, 'human', audioUrl, 'audio');
+
+    await supabase
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', conv.id);
+
+    console.log(`🧑‍💻 Audio manual enviado desde el panel a ${destino}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ Error en /api/panel/enviar-audio:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });
