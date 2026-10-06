@@ -37,17 +37,12 @@ const COPIA_PHONE = '573207679813'; // Duvan, con 57 al inicio, sin espacios
 
 // Saludo de confianza: se manda UNA SOLA VEZ, en el primer mensaje de
 // cada contacto nuevo, antes de que la IA entre a la conversación
-const SALUDO_CONFIANZA_IMAGEN = 'https://uqqhbqgebwnbpgeztubs.supabase.co/storage/v1/object/public/servicell-images/3ac7bb5f-a052-4982-8ce4-0706b9ee42a0.JPG';
-const SALUDO_CONFIANZA_TEXTO = `💙 ¡Hola! Bienvenido/a a *Servicell*.
+const SALUDO_CONFIANZA_TEXTO = `Hola 👋🏻 Soy Natalia, ¡qué gusto tenerte por aquí! 😊
 
-Estás hablando con nuestro *WhatsApp oficial*.
+Bienvenid@ a Servicell ⚡
+Cuéntame, ¿qué iPhone estás buscando?
 
-Sabemos que antes de realizar una compra es importante sentirse seguro, por eso puedes verificar nuestros canales oficiales y confirmar que estás contactando directamente con nosotros 👇
-
-🔎 *Verifica aquí nuestra página oficial y líneas oficiales:*
-https://www.instagram.com/p/DdfchQ8kSUJ/?img_index=2&stkn=ZnRqb2ZpNTF1aTdw
-
-Ahora sí 😊 cuéntame, ¿qué iPhone estás buscando?`;
+Estaré feliz de asesorarte y ayudarte a encontrar la mejor opción para ti. 🧡`;
 
 const PALABRAS_CASOS = ['casos', 'pendientes', 'ventas', 'pedidos'];
 const HISTORY_LIMIT = 12;
@@ -1730,14 +1725,10 @@ async function sendImage(destino, imageUrl) {
   return enviarAMeta(destino, { type: 'image', image: { link: imageUrl } }, 'imagen');
 }
 
-// Manda el saludo de confianza (imagen + texto en un solo mensaje) y
-// lo guarda en el historial para que la IA sepa que ya se mandó
+// Manda el saludo de confianza (solo texto) y lo guarda en el
+// historial para que la IA sepa que ya se mandó
 async function enviarSaludoConfianza(destino, conversation, contactId) {
-  await enviarAMeta(
-    destino,
-    { type: 'image', image: { link: SALUDO_CONFIANZA_IMAGEN, caption: SALUDO_CONFIANZA_TEXTO } },
-    'saludo de confianza'
-  );
+  await sendMessage(destino, SALUDO_CONFIANZA_TEXTO);
   if (conversation?.id) {
     saveMessage(conversation.id, contactId, 'agent', SALUDO_CONFIANZA_TEXTO)
       .catch(err => console.error('⚠️ No se guardó el saludo de confianza:', err.message));
