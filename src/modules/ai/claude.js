@@ -23,8 +23,7 @@ const FAMILIAS_COLOR = {
   rosados:   ['rosa', 'rosado', 'rosada', 'pink'],
   verdes:    ['verde', 'green', 'pino'],
   amarillos: ['amarillo', 'amarilla', 'yellow'],
-  rojos:     ['rojo', 'roja', 'red'],
-  borgona:   ['borgona', 'borgoña', 'vinotinto', 'vino tinto', 'vino', 'burdeos', 'granate', 'bordo', 'wine', 'burgundy', 'cereza', 'cereza oscuro']
+  rojos:     ['rojo', 'roja', 'red', 'borgona', 'borgoña', 'vinotinto', 'vino tinto', 'vino', 'burdeos', 'granate', 'bordo', 'wine', 'burgundy', 'cereza', 'cereza oscuro']
 };
 
 function simplificar(texto) {
