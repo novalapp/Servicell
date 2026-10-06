@@ -160,10 +160,27 @@ async function getProductsInfo(clientId) {
         capacidad: p.capacity,
         precio: p.price,
         hay,
-        bateria
+        bateria,
+        colores: []
       });
     }
+    if (p.color) grupos.get(clave).colores.push(p.color);
   });
+
+  // Normalmente el color NO va en el texto del inventario (para que la
+  // IA no lo mencione sin que se lo pidan — ver commit de "quitar
+  // colores del inventario"). Pero hay modelos (ej. iPhone 18 Pro) donde
+  // el PRECIO sí cambia según el color — ahí el color deja de ser un
+  // dato que hay que esconder y pasa a ser información necesaria para
+  // dar el precio correcto. Por eso: si para un mismo modelo+capacidad
+  // hay más de un precio distinto, se asume que es por color, y esas
+  // líneas SÍ muestran el color.
+  const preciosPorModeloCapacidad = new Map();
+  for (const g of grupos.values()) {
+    const key = `${g.nombre}|${g.capacidad}`;
+    if (!preciosPorModeloCapacidad.has(key)) preciosPorModeloCapacidad.set(key, new Set());
+    preciosPorModeloCapacidad.get(key).add(g.precio);
+  }
 
   // Los agotados van en su propia línea, separados de los disponibles
   // — mezclados al final de una línea larga de inventario es fácil que
@@ -172,12 +189,17 @@ async function getProductsInfo(clientId) {
   const lineasAgotadas = [];
 
   for (const g of grupos.values()) {
+    const key = `${g.nombre}|${g.capacidad}`;
+    const precioVariaPorColor = preciosPorModeloCapacidad.get(key).size > 1;
+
     const partes = [g.nombre];
     if (g.capacidad) partes.push(g.capacidad);
+    if (precioVariaPorColor && g.colores.length) partes.push(g.colores.join('/'));
 
     const precio = `$${Number(g.precio).toLocaleString('es-CO')}`;
     const bat = g.bateria ? ` bat.${g.bateria}` : '';
-    const linea = `${partes.join(' ')} ${precio}${bat}`;
+    const nota = precioVariaPorColor ? ' (el precio de este modelo varía por color, usa el precio de la línea que corresponda)' : '';
+    const linea = `${partes.join(' ')} ${precio}${bat}${nota}`;
 
     if (g.hay) {
       const cat = g.categoria || 'Otros';
@@ -209,7 +231,48 @@ async function getProductsInfo(clientId) {
     .filter(([, hay]) => !hay)
     .map(([nombre]) => nombre);
 
-  return { texto, colores: Array.from(colores), agotados };
+  // Chuleta aparte (no enterrada en el inventario) para los pocos
+  // modelos donde el precio sí cambia según el color — probado que
+  // metida dentro del texto del inventario la IA no le hace caso;
+  // como bloque de sistema propio, justo antes de responder, sí.
+  //
+  // Va por COLOR, no por capacidad, y marca explícito cuándo un color
+  // NO existe en alguna capacidad donde sí hay otros — probado que sin
+  // ese "NO existe" explícito, la IA asume que todos los colores vienen
+  // en todas las capacidades (ej. "ya hablamos de 256GB, el Borgoña
+  // también debe venir en 256GB" cuando en realidad solo viene en 512GB).
+  const modelosConVariacion = new Set(
+    [...preciosPorModeloCapacidad.entries()]
+      .filter(([, precios]) => precios.size > 1)
+      .map(([key]) => key.split('|')[0])
+  );
+
+  const notaPrecios = [];
+  for (const nombreModelo of modelosConVariacion) {
+    const filasModelo = [...grupos.values()].filter(g => g.nombre === nombreModelo && g.hay);
+    const capacidades = [...new Set(filasModelo.map(g => g.capacidad))];
+    const coloresDelModelo = [...new Set(filasModelo.flatMap(g => g.colores))];
+
+    const lineas = [];
+    for (const capacidad of capacidades) {
+      const filasCap = filasModelo.filter(g => g.capacidad === capacidad);
+      const detalle = filasCap
+        .map(g => `${g.colores.join('/') || 'sin color registrado'} $${Number(g.precio).toLocaleString('es-CO')}`)
+        .join(', ');
+      lineas.push(`  ${capacidad}: ${detalle}`);
+
+      const coloresEnEstaCap = new Set(filasCap.flatMap(g => g.colores));
+      const faltantes = coloresDelModelo.filter(c => !coloresEnEstaCap.has(c));
+      if (faltantes.length) lineas.push(`  ${capacidad}: NO existe en ${faltantes.join('/')} — no inventes ese precio`);
+    }
+    notaPrecios.push(`${nombreModelo}:\n${lineas.join('\n')}`);
+  }
+
+  const textoNotaPrecios = notaPrecios.length
+    ? `PRECIOS POR COLOR: estos modelos cambian de precio según el color y/o\nno vienen en todas las capacidades en todos los colores —\n${notaPrecios.join('\n\n')}\n\nSi el cliente nombra uno de estos modelos con un color puntual, usa el\nprecio EXACTO de esta lista para esa capacidad y ese color — incluso si\nla conversación ya venía hablando de otra capacidad para otro color.\nNUNCA uses un precio "desde" genérico para ellos, y NUNCA asumas que\nun color viene en una capacidad donde la lista dice que no existe.`
+    : '';
+
+  return { texto, colores: Array.from(colores), agotados, notaPrecios: textoNotaPrecios };
 }
 
 async function getPromotionsInfo(clientId) {
@@ -271,6 +334,7 @@ REGLAS:
 
     if (nota) system.push({ type: "text", text: nota });
     system.push({ type: "text", text: horaActual });
+    if (inventario.notaPrecios) system.push({ type: "text", text: inventario.notaPrecios });
 
     const messages = [
       ...conversationHistory,
