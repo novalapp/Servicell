@@ -401,6 +401,16 @@ async function handleMessage(destino, text, imagenId = null) {
   let textoParaGuardar = text;
 
   if (imagenId) {
+    // Copia SIEMPRE al equipo, ANTES de intentar procesarla para la IA
+    // y sin depender de que eso funcione — reenvía por el mediaId
+    // directo, no necesita la descarga de abajo. Si la foto viene en
+    // un formato que Claude no acepta (ej. HEIC de iPhone) o pesa
+    // demasiado, igual tiene que llegarle a alguien, para que no quede
+    // una foto sin saber qué era.
+    copiaFotoSiempreAlEquipo(destino, imagenId, text).catch(err => {
+      console.error('⚠️ No pude mandar la copia automática de la foto:', err.message);
+    });
+
     try {
       const img = await descargarImagen(imagenId);
       contenidoUsuario = [
@@ -409,13 +419,6 @@ async function handleMessage(destino, text, imagenId = null) {
       ];
       textoParaGuardar = text ? `[foto] ${text}` : '[el cliente envió una foto]';
       console.log('📷 Foto descargada y lista para la IA');
-
-      // Copia SIEMPRE al equipo, sin depender de que la IA decida
-      // avisar — así ve cualquier foto que mande un cliente, no solo
-      // las que la IA clasifica como comprobante o preaprobado.
-      copiaFotoSiempreAlEquipo(destino, imagenId, text).catch(err => {
-        console.error('⚠️ No pude mandar la copia automática de la foto:', err.message);
-      });
     } catch (err) {
       console.error('⚠️ No pude descargar la foto:', err.message);
       await sendMessage(destino, 'Disculpa, no pude abrir esa foto 🙈 ¿Me la puedes reenviar o contarme por escrito qué necesitas?');
