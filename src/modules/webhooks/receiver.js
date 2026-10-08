@@ -489,7 +489,7 @@ async function handleMessage(destino, text, imagenId = null) {
       console.log(`📞 Datos conocidos del cliente: ${partes.join(', ')}`);
     }
 
-    const { texto: respuestaCruda, agotados: modelosAgotados } = await generateResponse(contenidoParaIA, CLIENT_ID, history);
+    const { texto: respuestaCruda, agotados: modelosAgotados, variaPorColor: modelosVariaColor } = await generateResponse(contenidoParaIA, CLIENT_ID, history);
 
         // Consultas para el agente 2 (descuentos, SIM, etc.)
     const marcaAgente2 = /\[AGENTE2:([^\]]*)\]/.exec(respuestaCruda);
@@ -562,6 +562,25 @@ async function handleMessage(destino, text, imagenId = null) {
 
     if (textoLimpio) {
       const historialTexto = history.map(m => m.content).filter(Boolean).join(' ');
+
+      // Modelos con precio por color (ej. iPhone 18 Pro): si la IA dio un
+      // precio plano sin aclarar que depende del color, no hace falta
+      // pausar para que un humano responda — se manda el listado
+      // automáticamente, sin depender de que la IA se acuerde de poner
+      // la marca [FOTO:lista].
+      const riesgoPrecioLista = confirmaPrecioFijoParaModeloVariable(textoLimpio.toLowerCase(), modelosVariaColor);
+      if (riesgoPrecioLista) {
+        console.log(`📋 ${riesgoPrecioLista} — mandando listado de precios en su lugar`);
+        const mensajeLista = 'Te mando la lista de precios para que la veas fácil — ahí están todos los colores y capacidades.';
+        await sendMessage(destino, mensajeLista);
+        await enviarFotos(destino, [{ tipo: 'lista' }]);
+        if (conversation) {
+          saveMessage(conversation.id, contactId, 'agent', mensajeLista)
+            .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+        }
+        return;
+      }
+
       const riesgo = respuestaTieneRiesgo(textoLimpio, historialTexto, modelosAgotados);
 
       if (riesgo) {
@@ -1163,6 +1182,33 @@ function confirmaSimIncorrecta(textoMinuscula, historialTexto) {
     }
     if (!debeSerEsim && afirmaEsim && !afirmaFisica) {
       return `tipo de SIM incorrecto (iPhone ${gen} es SIM física, la respuesta afirma eSIM)`;
+    }
+  }
+
+  return null;
+}
+
+// Algunos modelos (ej. iPhone 18 Pro) no tienen un precio único — cambia
+// según el color (ver prompt, REGLA #3, EXCEPCIÓN y claude.js,
+// "modelosConVariacion"). Probado contra una conversación real: la IA
+// ignoró la excepción y dio el precio plano como si fuera fijo ("lo
+// tenemos en $4.600.000"), sin aclarar que el Borgoña cuesta distinto
+// — mismo patrón que agotado/SIM, el prompt no basta. Esta red de
+// seguridad recibe la lista de modelos con precio variable y bloquea
+// si la respuesta da un precio de uno de ellos sin mencionar "color"
+// en ningún lado del mensaje.
+function confirmaPrecioFijoParaModeloVariable(textoMinuscula, modelosVariaColor) {
+  if (!Array.isArray(modelosVariaColor) || modelosVariaColor.length === 0) return null;
+  if (!/\$\s?\d/.test(textoMinuscula)) return null;
+  if (/\bcolor(es)?\b/.test(textoMinuscula)) return null;
+
+  for (const nombre of modelosVariaColor) {
+    if (!nombre) continue;
+    // Mismo lookahead que confirmaModeloAgotado: que "iPhone 18 Pro" no
+    // haga match dentro de "iPhone 18 Pro Max" (modelo distinto).
+    const regexNombre = new RegExp(`\\b${escapeRegex(nombre.toLowerCase())}\\b(?!\\s+(pro|max|plus|mini))`);
+    if (regexNombre.test(textoMinuscula)) {
+      return `precio fijo dado para "${nombre}" sin aclarar que varía por color`;
     }
   }
 

@@ -131,11 +131,11 @@ async function getProductsInfo(clientId) {
 
   if (error) {
     console.error("Error fetching products:", error);
-    return { texto: "", colores: [], agotados: [] };
+    return { texto: "", colores: [], agotados: [], variaPorColor: [] };
   }
 
   if (!data || data.length === 0) {
-    return { texto: "Sin productos cargados", colores: [], agotados: [] };
+    return { texto: "Sin productos cargados", colores: [], agotados: [], variaPorColor: [] };
   }
 
   const colores = new Set();
@@ -271,7 +271,7 @@ async function getProductsInfo(clientId) {
     ? `PRECIOS POR COLOR: estos modelos cambian de precio según el color y/o\nno vienen en todas las capacidades en todos los colores —\n${notaPrecios.join('\n\n')}\n\nSi el cliente nombra uno de estos modelos con un color puntual, usa el\nprecio EXACTO de esta lista para esa capacidad y ese color — incluso si\nla conversación ya venía hablando de otra capacidad para otro color.\nNUNCA uses un precio "desde" genérico para ellos, y NUNCA asumas que\nun color viene en una capacidad donde la lista dice que no existe.`
     : '';
 
-  return { texto, colores: Array.from(colores), agotados, notaPrecios: textoNotaPrecios };
+  return { texto, colores: Array.from(colores), agotados, notaPrecios: textoNotaPrecios, variaPorColor: [...modelosConVariacion] };
 }
 
 async function getPromotionsInfo(clientId) {
@@ -361,7 +361,7 @@ REGLAS:
     const bloqueTexto = response.content.find(b => b.type === 'text');
     if (!bloqueTexto) throw new Error('La respuesta de Claude no trajo ningún bloque de texto');
 
-    return { texto: bloqueTexto.text, agotados: inventario.agotados };
+    return { texto: bloqueTexto.text, agotados: inventario.agotados, variaPorColor: inventario.variaPorColor };
   } catch (error) {
     console.error("Error calling Claude API:", error);
     throw new Error(`Failed to generate response: ${error.message}`);
