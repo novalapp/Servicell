@@ -568,12 +568,21 @@ async function handleMessage(destino, text, imagenId = null) {
       // pausar para que un humano responda — se manda el listado
       // automáticamente, sin depender de que la IA se acuerde de poner
       // la marca [FOTO:lista].
+      //
+      // Solo UNA vez por cliente (ver puedeMandarListaAuto): se vio en
+      // producción que si esto sigue disparando en los siguientes
+      // turnos (porque la IA sigue sin aclarar el color), se repetía el
+      // mismo mensaje una y otra vez sin importar lo que respondiera el
+      // cliente — hasta "no me mandes eso" generaba el mismo envío. Si
+      // vuelve a pasar después de la primera vez, se trata como
+      // cualquier otro riesgo: se pausa para que entre un humano.
       const riesgoPrecioLista = confirmaPrecioFijoParaModeloVariable(textoLimpio.toLowerCase(), modelosVariaColor);
-      if (riesgoPrecioLista) {
+      if (riesgoPrecioLista && puedeMandarListaAuto(destino)) {
         console.log(`📋 ${riesgoPrecioLista} — mandando listado de precios en su lugar`);
         const mensajeLista = 'Te mando la lista de precios para que la veas fácil — ahí están todos los colores y capacidades.';
         await sendMessage(destino, mensajeLista);
         await enviarFotos(destino, [{ tipo: 'lista' }]);
+        listaAutoEnviada(destino);
         if (conversation) {
           saveMessage(conversation.id, contactId, 'agent', mensajeLista)
             .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
@@ -581,7 +590,11 @@ async function handleMessage(destino, text, imagenId = null) {
         return;
       }
 
-      const riesgo = respuestaTieneRiesgo(textoLimpio, historialTexto, modelosAgotados);
+      // Si ya se mandó el listado antes y esto sigue disparando, no se
+      // repite — se trata como un riesgo normal (bloquea y pausa).
+      const riesgo = (riesgoPrecioLista && !puedeMandarListaAuto(destino))
+        ? `${riesgoPrecioLista} (ya se había mandado el listado antes, no se repite)`
+        : respuestaTieneRiesgo(textoLimpio, historialTexto, modelosAgotados);
 
       if (riesgo) {
         console.error(`🚨 Respuesta bloqueada (${riesgo}): ${textoLimpio}`);
@@ -941,6 +954,26 @@ function avisoYaEnviado(destino) {
   if (avisosRecientes.size > 500) {
     for (const [k, t] of avisosRecientes) {
       if (Date.now() - t > VENTANA_AVISO_MS) avisosRecientes.delete(k);
+    }
+  }
+}
+
+// Mismo mecanismo que avisosRecientes, aparte, para el envío automático
+// del listado de precios (ver confirmaPrecioFijoParaModeloVariable) —
+// en producción se vio que sin este límite se repetía el mismo mensaje
+// en cada turno, sin importar lo que respondiera el cliente.
+const listaAutoRecientes = new Map();
+
+function puedeMandarListaAuto(destino) {
+  const ultimo = listaAutoRecientes.get(destino);
+  return !ultimo || (Date.now() - ultimo) > VENTANA_AVISO_MS;
+}
+
+function listaAutoEnviada(destino) {
+  listaAutoRecientes.set(destino, Date.now());
+  if (listaAutoRecientes.size > 500) {
+    for (const [k, t] of listaAutoRecientes) {
+      if (Date.now() - t > VENTANA_AVISO_MS) listaAutoRecientes.delete(k);
     }
   }
 }
