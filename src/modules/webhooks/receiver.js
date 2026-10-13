@@ -123,6 +123,23 @@ router.post('/webhook', async (req, res) => {
 
         console.log(`📱 Mensaje de ${destino}: ${text}`);
         encolarTexto(destino, text);
+      } else if (value.statuses && value.statuses.length > 0) {
+        // Meta confirma por acá si un mensaje que mandamos (avisos al
+        // equipo incluidos) se entregó o falló — antes esto se
+        // ignoraba del todo, incluso un "failed" quedaba invisible. Un
+        // mensaje puede salir con "enviado:true" en avisos_asesora
+        // (Meta le dio un ID al aceptar la petición) y aun así fallar
+        // acá después, sin que nadie se enterara.
+        for (const estado of value.statuses) {
+          if (estado.status === 'failed') {
+            const razon = (estado.errors || []).map(e => `${e.code}: ${e.title}${e.error_data?.details ? ' — ' + e.error_data.details : ''}`).join(' | ');
+            console.error(`❌ Entrega fallida a ${estado.recipient_id}: ${razon}`);
+            registrarAviso('entrega_fallida', `Mensaje a ${estado.recipient_id} falló: ${razon}`, null, false, razon)
+              .catch(err => console.error('⚠️ No pude registrar la entrega fallida:', err.message));
+          } else {
+            console.log(`📬 Estado "${estado.status}" para mensaje a ${estado.recipient_id}`);
+          }
+        }
       }
     }
   } catch (error) {
@@ -601,7 +618,22 @@ async function handleMessage(destino, text, imagenId = null) {
         const mensajeSeguro = 'Dame un momento, ya te confirmo eso.';
         await sendMessage(destino, mensajeSeguro);
         const textoBloqueo = `La IA iba a responder esto, lo bloqueé antes de que le llegara al cliente:\n\n"${textoLimpio}"\n\nEntra al panel y respóndele tú.`;
-        await sendMessage(AGENTE2_PHONE, `⚠️ RESPUESTA BLOQUEADA (${riesgo})\n\n${textoBloqueo}`);
+        const envioAviso = await sendMessage(AGENTE2_PHONE, `⚠️ RESPUESTA BLOQUEADA (${riesgo})\n\n${textoBloqueo}`);
+        if (!envioAviso.ok) {
+          console.error(`❌ El aviso de respuesta bloqueada NO llegó a ${AGENTE2_PHONE}:`, JSON.stringify(envioAviso.data));
+        }
+        // Antes esto no quedaba registrado en ningún lado más que los
+        // logs de Railway — un cliente real quedó 2 horas sin que nadie
+        // se enterara porque el envío falló en silencio. Ahora queda en
+        // avisos_asesora, con enviado:true/false, igual que los demás
+        // tipos de aviso — así se puede revisar si un aviso no llegó.
+        await registrarAviso(
+          'respuesta_bloqueada',
+          `⚠️ RESPUESTA BLOQUEADA (${riesgo})\n\n${textoBloqueo}`,
+          conversation?.id,
+          envioAviso.ok,
+          envioAviso.ok ? null : JSON.stringify(envioAviso.data)
+        );
         await copiaParaDuvan(`⚠️ RESPUESTA BLOQUEADA (${riesgo})`, textoBloqueo);
         if (conversation?.id) {
           await supabase
