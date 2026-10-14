@@ -193,7 +193,11 @@ async function getProductsInfo(clientId) {
 
     const partes = [g.nombre];
     if (g.capacidad) partes.push(g.capacidad);
-    if (precioVariaPorColor && g.colores.length) partes.push(g.colores.join('/'));
+    // Antes el color solo se mostraba cuando el precio variaba por
+    // color — ahora Natalia revisa el inventario todas las mañanas, así
+    // que el color también es un dato confiable del día y la IA puede
+    // confirmarlo directo (ver prompt, REGLA #3).
+    if (g.colores.length) partes.push(g.colores.join('/'));
 
     const precio = `$${Number(g.precio).toLocaleString('es-CO')}`;
     const bat = g.bateria ? ` bat.${g.bateria}` : '';
@@ -274,6 +278,33 @@ async function getProductsInfo(clientId) {
   return { texto, colores: Array.from(colores), agotados, notaPrecios: textoNotaPrecios, variaPorColor: [...modelosConVariacion] };
 }
 
+// Lista aparte (igual que notaPrecios) con los modelos/colores que SÍ
+// tienen una foto real cargada en model_images — así la IA solo manda
+// [FOTO:modelo|color] cuando existe de verdad, y si no, sigue la regla
+// de avisar al equipo en vez de prometer una foto que no hay.
+async function getFotosDisponibles(clientId) {
+  const { data, error } = await supabase
+    .from("model_images")
+    .select("model, color")
+    .eq("client_id", clientId)
+    .eq("active", true);
+
+  if (error || !data || data.length === 0) return "";
+
+  const porModelo = new Map();
+  for (const f of data) {
+    if (!f.model) continue;
+    if (!porModelo.has(f.model)) porModelo.set(f.model, new Set());
+    if (f.color) porModelo.get(f.model).add(f.color);
+  }
+
+  const lineas = [...porModelo.entries()].map(
+    ([modelo, colores]) => `${modelo}: ${[...colores].join(', ')}`
+  );
+
+  return `FOTOS DISPONIBLES PARA MANDAR: para estos modelos y colores SÍ\ntienes una foto real cargada para mandar con la marca [FOTO:modelo|color]\n(ver FOTOS QUE TÚ ENVÍAS) —\n${lineas.join('\n')}\n\nSi el modelo o el color que piden NO aparece en esta lista (aunque sí\naparezca en el INVENTARIO), NO uses [FOTO:...] — en vez de eso, sigue\nla regla de avisar al equipo (ver FOTOS QUE TÚ ENVÍAS, "FOTO O VIDEO\nDE UN EQUIPO PUNTUAL").`;
+}
+
 async function getPromotionsInfo(clientId) {
   const now = new Date();
 
@@ -306,6 +337,7 @@ async function generateResponse(messageContent, clientId, conversationHistory = 
 
     const inventario = await getProductsInfo(clientId);
     const promociones = await getPromotionsInfo(clientId);
+    const fotosDisponibles = await getFotosDisponibles(clientId);
 
     // Esta parte es igual en todos los mensajes -> se puede cachear
     const parteEstable = `${config.system_prompt}
@@ -334,6 +366,7 @@ REGLAS:
     if (nota) system.push({ type: "text", text: nota });
     system.push({ type: "text", text: horaActual });
     if (inventario.notaPrecios) system.push({ type: "text", text: inventario.notaPrecios });
+    if (fotosDisponibles) system.push({ type: "text", text: fotosDisponibles });
 
     const messages = [
       ...conversationHistory,
