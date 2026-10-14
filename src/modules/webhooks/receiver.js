@@ -573,8 +573,31 @@ async function handleMessage(destino, text, imagenId = null) {
       return;
     }
 
+    let fotosFallidas = [];
     if (fotos.length > 0) {
-      await enviarFotos(destino, fotos);
+      fotosFallidas = await enviarFotos(destino, fotos);
+    }
+
+    // La IA prometió en el texto una foto de un modelo/color puntual
+    // que no tiene match real en model_images (ej. dijo "azul" pero no
+    // hay foto de azul para ese modelo). Mandar el texto de todos
+    // modos dejaría al cliente esperando una foto que nunca llega —
+    // mejor reemplazar toda la respuesta por el aviso al equipo, igual
+    // que cuando no hay foto desde el principio (ver prompt, FOTOS QUE
+    // TÚ ENVÍAS).
+    if (fotosFallidas.length > 0) {
+      console.error(`🚨 Foto de equipo puntual prometida sin match real: ${JSON.stringify(fotosFallidas)}`);
+      const mensajeSeguro = 'Dame un momento, ya te confirmo eso.';
+      await sendMessage(destino, mensajeSeguro);
+      if (puedeAvisar(destino)) {
+        await avisarAsesora('Foto de equipo puntual', destino, contactId, conversation);
+        avisoYaEnviado(destino);
+      }
+      if (conversation) {
+        saveMessage(conversation.id, contactId, 'agent', mensajeSeguro)
+          .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+      }
+      return;
     }
 
     if (textoLimpio) {
@@ -706,19 +729,29 @@ function parecido(buscado, candidato) {
   return palabrasA.some(p => p.length > 2 && palabrasB.includes(p)) ? 1 : 0;
 }
 
+// Devuelve las fotos de modelo puntual que NO se pudieron mandar (sin
+// match real en model_images) — el llamador las usa para decidir si
+// la respuesta de la IA queda engañosa (prometió una foto que nunca
+// llegó) y hay que reemplazarla por el aviso al equipo.
 async function enviarFotos(destino, fotos) {
+  const fallidas = [];
   for (const foto of fotos) {
     try {
       const url = (foto.tipo === 'lista')
         ? await getListaPrecios()
         : await getFotoModelo(foto.modelo, foto.color);
 
-      if (!url) continue;
+      if (!url) {
+        if (foto.tipo === 'modelo') fallidas.push(foto);
+        continue;
+      }
       await sendImage(destino, url);
     } catch (err) {
       console.error('⚠️ Error enviando foto:', err.message);
+      if (foto.tipo === 'modelo') fallidas.push(foto);
     }
   }
+  return fallidas;
 }
 
 async function getFotoModelo(modelo, color) {
@@ -754,7 +787,16 @@ async function getFotoModelo(modelo, color) {
     return null;
   }
 
-  if (!color) return delModelo[0].image_url;
+  // Antes, sin color mandaba la primera foto del modelo que encontrara
+  // — eso causó que se le mandara al cliente una foto de un color que
+  // no era el que pidió (ej. pidió "azul" y la IA olvidó poner el
+  // color en la marca [FOTO:modelo|color], así que llegó la primera
+  // foto disponible, que era de otro color). Mejor no mandar nada que
+  // mandar la equivocada — sin color específico, no hay match seguro.
+  if (!color) {
+    console.log(`📷 Marca [FOTO:${modelo}] sin color — no se manda nada para evitar mandar el color equivocado`);
+    return null;
+  }
 
   let mejor = null;
   let mejorPuntaje = 0;
