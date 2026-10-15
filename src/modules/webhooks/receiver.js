@@ -573,6 +573,18 @@ async function handleMessage(destino, text, imagenId = null) {
       return;
     }
 
+    // La IA a veces escribe "Te mando una foto del X en Y" y se le
+    // olvida la marca [FOTO:...] — el cliente se queda esperando una
+    // foto que nunca llega. Solo actúa si NO vino ninguna marca de
+    // modelo, así que nunca se manda doble.
+    if (!fotos.some(f => f.tipo === 'modelo')) {
+      const prometida = fotoPrometidaSinMarca(textoGenerado);
+      if (prometida) {
+        console.warn(`📷 La IA prometió foto sin marca — se agrega: ${JSON.stringify(prometida)}`);
+        fotos.push(prometida);
+      }
+    }
+
     let fotosFallidas = [];
     if (fotos.length > 0) {
       fotosFallidas = await enviarFotos(destino, fotos);
@@ -727,6 +739,20 @@ function parecido(buscado, candidato) {
   const palabrasB = candidato.toLowerCase().split(/\s+/).map(normalizar).filter(Boolean);
 
   return palabrasA.some(p => p.length > 2 && palabrasB.includes(p)) ? 1 : 0;
+}
+
+// Detecta la frase del prompt "Te mando una foto del [modelo] en
+// [color]" (ver prompt, FOTOS QUE TÚ ENVÍAS) y devuelve la foto que
+// prometió. Quita la capacidad ("256GB") para que el modelo calce con
+// model_images. Si el color no tiene match, getFotoModelo devuelve
+// null y se trata como cualquier foto fallida (aviso al equipo).
+function fotoPrometidaSinMarca(texto) {
+  const m = /te (?:mando|env[ií]o|comparto) (?:una |la )?foto del? (iphone [^.,!\n]+?) en ([a-záéíóúñ ]+?)\s*(?:[.!,📱]|$)/i.exec(texto || '');
+  if (!m) return null;
+  const modelo = m[1].replace(/\b\d+\s*(gb|tb)\b/ig, '').replace(/\s+/g, ' ').trim();
+  const color = m[2].trim();
+  if (!modelo || !color) return null;
+  return { tipo: 'modelo', modelo, color };
 }
 
 // Devuelve las fotos de modelo puntual que NO se pudieron mandar (sin
@@ -1555,7 +1581,8 @@ function extraerMarcas(respuesta) {
 
   const patronDatos = /\[DATOS\]([\s\S]*?)\[\/DATOS\]/;
   const encontrado = texto.match(patronDatos);
-  const textoLimpio = texto.replace(patronDatos, '').trim();
+  // WhatsApp usa *un* asterisco para negrita; con ** al cliente le salen literales
+  const textoLimpio = texto.replace(patronDatos, '').replace(/\*\*(.+?)\*\*/g, '*$1*').trim();
 
   if (!encontrado) return { datos: null, fotos, textoLimpio, motivoAsesora };
 
