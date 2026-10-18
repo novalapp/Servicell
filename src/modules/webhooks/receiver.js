@@ -10,6 +10,7 @@ const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
 const ffmpegPath = require('@ffmpeg-installer/ffmpeg').path;
+const heicConvert = require('heic-convert');
 
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
@@ -294,7 +295,7 @@ async function responderNoTexto(destino, tipo, mediaId = null) {
   await sendMessage(destino, texto);
 }
 
-// Descarga una foto de WhatsApp y la deja lista para la IA
+// Descarga una foto de WhatsApp (tal cual llega, sin convertir)
 async function descargarImagen(mediaId) {
   const cabeceras = { Authorization: `Bearer ${META_ACCESS_TOKEN}` };
 
@@ -304,18 +305,94 @@ async function descargarImagen(mediaId) {
 
   if (!info.url) throw new Error(`Meta no dio URL: ${JSON.stringify(info)}`);
 
-  const permitidos = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-  if (!permitidos.includes(info.mime_type)) {
-    throw new Error(`formato no soportado: ${info.mime_type}`);
-  }
-
   // 2. Descargar el archivo
   const binRes = await fetch(info.url, { headers: cabeceras });
   const buffer = Buffer.from(await binRes.arrayBuffer());
 
-  if (buffer.length > 4500000) throw new Error('la foto pesa demasiado');
+  return { buffer, mime: info.mime_type };
+}
 
-  return { base64: buffer.toString('base64'), mime: info.mime_type };
+// La IA solo acepta estos formatos, y fotos de hasta ~4.5 MB
+const FORMATOS_FOTO_IA = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+const LIMITE_FOTO_IA = 4500000;
+
+// ---------------------------------------------------------------
+// FOTOS DEL CHAT (panel ↔ cliente)
+// ---------------------------------------------------------------
+// La API de WhatsApp solo acepta fotos JPG o PNG de hasta 5 MB — un
+// .webp o un .heic (fotos de iPhone) no sirven tal cual. Lo que no
+// cumpla se convierte a JPG antes de mandarlo o de guardarlo (los
+// navegadores tampoco muestran .heic, así que el panel tampoco podría).
+const BUCKET_FOTOS_CHAT = 'servicell-chat-images';
+const MAX_FOTO_WHATSAPP = 5 * 1024 * 1024;
+
+// Por el contenido del archivo, no por la extensión (que puede mentir)
+function formatoDeImagen(buffer) {
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8) return 'jpg';
+  if (buffer[0] === 0x89 && buffer[1] === 0x50) return 'png';
+  if (buffer.slice(0, 4).toString('latin1') === 'RIFF' && buffer.slice(8, 12).toString('latin1') === 'WEBP') return 'webp';
+  if (buffer.slice(0, 4).toString('latin1') === 'GIF8') return 'gif';
+  if (/^ftyp(heic|heix|hevc|heim|heis|mif1|msf1)/.test(buffer.slice(4, 12).toString('latin1'))) return 'heic';
+  return 'otro';
+}
+
+// Convierte a JPG con ffmpeg y deja el lado más largo en máx. 2048 px
+// — de sobra para WhatsApp y muy por debajo de los 5 MB.
+async function ffmpegAJpg(buffer, extensionEntrada) {
+  const base = `foto-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const entrada = path.join(os.tmpdir(), `${base}.${extensionEntrada}`);
+  const salida = path.join(os.tmpdir(), `${base}.jpg`);
+
+  try {
+    await fs.writeFile(entrada, buffer);
+    await execFileAsync(ffmpegPath, [
+      '-y', '-i', entrada,
+      '-vf', "scale='min(2048,iw)':'min(2048,ih)':force_original_aspect_ratio=decrease",
+      '-frames:v', '1', '-q:v', '3', salida
+    ]);
+    return await fs.readFile(salida);
+  } finally {
+    await fs.unlink(entrada).catch(() => {});
+    await fs.unlink(salida).catch(() => {});
+  }
+}
+
+// Devuelve { buffer, convertida }: la foto en JPG o PNG y por debajo de
+// maxBytes. Si ya cumplía, la devuelve igual sin tocarla.
+async function prepararFoto(buffer, maxBytes = MAX_FOTO_WHATSAPP) {
+  const formato = formatoDeImagen(buffer);
+  if ((formato === 'jpg' || formato === 'png') && buffer.length <= maxBytes) {
+    return { buffer, convertida: false };
+  }
+
+  let resultado = buffer;
+  let extension = formato;
+  if (formato === 'heic') {
+    // El ffmpeg del proyecto no abre HEIC — heic-convert sí
+    resultado = Buffer.from(await heicConvert({ buffer, format: 'JPEG', quality: 0.85 }));
+    extension = 'jpg';
+  }
+  if (extension !== 'jpg' || resultado.length > maxBytes) {
+    resultado = await ffmpegAJpg(resultado, extension);
+  }
+  return { buffer: resultado, convertida: true };
+}
+
+// Sube una foto (ya en JPG o PNG) al bucket del chat y devuelve su URL pública
+async function subirFotoChat(buffer, nombre) {
+  const esPng = formatoDeImagen(buffer) === 'png';
+  const rutaStorage = `${nombre}.${esPng ? 'png' : 'jpg'}`;
+
+  const { error: errorSubida } = await supabase.storage
+    .from(BUCKET_FOTOS_CHAT)
+    .upload(rutaStorage, buffer, { contentType: esPng ? 'image/png' : 'image/jpeg', upsert: true });
+
+  if (errorSubida) throw new Error(`No se pudo subir la foto: ${errorSubida.message}`);
+
+  const { data: urlData } = supabase.storage.from(BUCKET_FOTOS_CHAT).getPublicUrl(rutaStorage);
+  if (!urlData?.publicUrl) throw new Error('No se pudo obtener la URL pública de la foto');
+
+  return urlData.publicUrl;
 }
 
 // Descarga una nota de voz de WhatsApp y la sube al mismo bucket que
@@ -416,6 +493,7 @@ async function handleMessage(destino, text, imagenId = null) {
   // Si viene foto, la descargamos y se la pasamos a la IA
   let contenidoUsuario = text;
   let textoParaGuardar = text;
+  let fotoUrl = null;
 
   if (imagenId) {
     // Copia SIEMPRE al equipo, ANTES de intentar procesarla para la IA
@@ -429,12 +507,31 @@ async function handleMessage(destino, text, imagenId = null) {
     });
 
     try {
-      const img = await descargarImagen(imagenId);
+      const foto = await descargarImagen(imagenId);
+      let paraIA = foto;
+
+      // Se pasa a JPG/PNG (ej. HEIC de iPhone) y se sube al bucket del
+      // chat, para que el panel la muestre en el historial — mismo
+      // formato que las notas de voz. Si esto falla, la IA igual la
+      // recibe tal cual llegó, como antes.
+      try {
+        const lista = await prepararFoto(foto.buffer, LIMITE_FOTO_IA);
+        paraIA = { buffer: lista.buffer, mime: formatoDeImagen(lista.buffer) === 'png' ? 'image/png' : 'image/jpeg' };
+        fotoUrl = await subirFotoChat(lista.buffer, `entrante-${imagenId}`);
+      } catch (err) {
+        console.error('⚠️ No se pudo convertir/subir la foto del cliente:', err.message);
+      }
+
+      if (!FORMATOS_FOTO_IA.includes(paraIA.mime)) throw new Error(`formato no soportado: ${paraIA.mime}`);
+      if (paraIA.buffer.length > LIMITE_FOTO_IA) throw new Error('la foto pesa demasiado');
+
       contenidoUsuario = [
-        { type: 'image', source: { type: 'base64', media_type: img.mime, data: img.base64 } },
+        { type: 'image', source: { type: 'base64', media_type: paraIA.mime, data: paraIA.buffer.toString('base64') } },
         { type: 'text', text: text || '¿Qué me puedes decir de esta foto?' }
       ];
-      textoParaGuardar = text ? `[foto] ${text}` : '[el cliente envió una foto]';
+      // Con la foto ya guardada aparte (como imagen), el texto queda
+      // solo con lo que escribió el cliente
+      textoParaGuardar = fotoUrl ? text : (text ? `[foto] ${text}` : '[el cliente envió una foto]');
       console.log('📷 Foto descargada y lista para la IA');
     } catch (err) {
       console.error('⚠️ No pude descargar la foto:', err.message);
@@ -449,14 +546,14 @@ async function handleMessage(destino, text, imagenId = null) {
 
     if (contactoNuevo) {
       console.log('💙 Contacto nuevo — mandando saludo de confianza');
-      await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
+      await guardarEntradaCliente(conversation.id, contactId, textoParaGuardar, fotoUrl);
       await enviarSaludoConfianza(destino, conversation, contactId);
       return;
     }
 
     if (conversation.handled_by === 'human') {
       console.log('🤐 Conversación en manos de la asesora, el bot no responde');
-      await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
+      await guardarEntradaCliente(conversation.id, contactId, textoParaGuardar, fotoUrl);
 
       // Pausada por una nota de voz: silencio total hasta que alguien
       // la reactive desde el panel — ni un mensaje fijo de "en un
@@ -481,7 +578,7 @@ async function handleMessage(destino, text, imagenId = null) {
     history = await getHistory(conversation.id);
     console.log(`📚 Historial recuperado: ${history.length} mensajes`);
 
-    await saveMessage(conversation.id, contactId, 'contact', textoParaGuardar);
+    await guardarEntradaCliente(conversation.id, contactId, textoParaGuardar, fotoUrl);
   } catch (dbError) {
     console.error('⚠️ Error de base de datos (el chat continúa):', dbError.message);
     history = [];
@@ -1810,10 +1907,17 @@ async function saveMessage(conversationId, contactId, senderType, content, messa
   console.log(`💾 Mensaje guardado (${senderType})`);
 }
 
+// Lo que mandó el cliente: la foto (si se pudo subir) va como su propio
+// mensaje tipo 'image' para que el panel la muestre, y el texto aparte
+async function guardarEntradaCliente(conversationId, contactId, texto, fotoUrl) {
+  if (fotoUrl) await saveMessage(conversationId, contactId, 'contact', fotoUrl, 'image');
+  if (texto) await saveMessage(conversationId, contactId, 'contact', texto);
+}
+
 async function getHistory(conversationId) {
   const { data, error } = await supabase
     .from('messages')
-    .select('sender_type, content')
+    .select('sender_type, content, message_type')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: false })
     .limit(HISTORY_LIMIT);
@@ -1821,13 +1925,17 @@ async function getHistory(conversationId) {
   if (error) throw new Error(`leer historial: ${error.message}`);
   if (!data || data.length === 0) return [];
 
+  // Las fotos se guardan como su URL (para el panel) — a la IA no le
+  // sirve un link suelto, así que en el historial va una nota corta
   const ordenados = data
     .slice()
     .reverse()
     .filter(m => m.content)
     .map(m => ({
       role: m.sender_type === 'contact' ? 'user' : 'assistant',
-      content: m.content
+      content: m.message_type === 'image'
+        ? (m.sender_type === 'contact' ? '[el cliente envió una foto]' : '[se le envió una foto al cliente]')
+        : m.content
     }));
 
   const limpio = [];
@@ -2134,6 +2242,78 @@ router.post('/api/panel/enviar-audio', async (req, res) => {
     return res.json({ ok: true });
   } catch (err) {
     console.error('❌ Error en /api/panel/enviar-audio:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/panel/enviar-imagen   { conversationId, imageUrl }
+// Mismo patrón que /api/panel/enviar-audio, pero manda una foto.
+//
+// FORMATO: WhatsApp solo acepta JPG o PNG de hasta 5 MB. Si lo que subió
+// el panel es .webp, .heic o pesa más, se convierte con prepararFoto y
+// se sube la versión convertida al mismo bucket. Si la conversión falla,
+// se intenta con el archivo original de todas formas (igual que audio).
+router.post('/api/panel/enviar-imagen', async (req, res) => {
+  if (!panelAutorizado(req)) return res.status(401).json({ error: 'No autorizado' });
+
+  const { conversationId, imageUrl } = req.body || {};
+
+  if (!conversationId || !imageUrl || !String(imageUrl).trim()) {
+    return res.status(400).json({ error: 'Faltan conversationId o imageUrl' });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('conversations')
+      .select('id, contact_id, contacts(external_id)')
+      .eq('client_id', CLIENT_ID)
+      .eq('id', conversationId)
+      .limit(1);
+
+    if (error) throw new Error(error.message);
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Conversación no encontrada' });
+    }
+
+    const conv = data[0];
+    const destino = conv.contacts?.external_id;
+
+    if (!destino) return res.status(400).json({ error: 'El contacto no tiene identificador' });
+
+    let imageUrlFinal = imageUrl;
+    try {
+      const descarga = await fetch(imageUrl);
+      if (!descarga.ok) throw new Error(`No se pudo descargar la foto original (HTTP ${descarga.status})`);
+      const lista = await prepararFoto(Buffer.from(await descarga.arrayBuffer()));
+      if (lista.convertida) {
+        imageUrlFinal = await subirFotoChat(lista.buffer, `convertida-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        console.log('🖼️ Foto convertida para WhatsApp:', imageUrlFinal);
+      }
+    } catch (err) {
+      console.error('⚠️ No se pudo revisar/convertir la foto, se intenta con la original:', err.message);
+    }
+
+    const resultado = await enviarAMeta(destino, { type: 'image', image: { link: imageUrlFinal } }, 'imagen');
+
+    if (!resultado.ok) {
+      console.error('❌ Error en /api/panel/enviar-imagen (Meta rechazó la foto):', JSON.stringify(resultado.data));
+      return res.status(502).json({
+        error: 'WhatsApp rechazó la foto',
+        detalleMeta: resultado.data
+      });
+    }
+
+    await saveMessage(conv.id, conv.contact_id, 'human', imageUrlFinal, 'image');
+
+    await supabase
+      .from('conversations')
+      .update({ updated_at: new Date().toISOString() })
+      .eq('id', conv.id);
+
+    console.log(`🧑‍💻 Foto manual enviada desde el panel a ${destino}`);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('❌ Error en /api/panel/enviar-imagen:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });
