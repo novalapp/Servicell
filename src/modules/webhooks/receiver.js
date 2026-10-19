@@ -603,7 +603,7 @@ async function handleMessage(destino, text, imagenId = null) {
       console.log(`📞 Datos conocidos del cliente: ${partes.join(', ')}`);
     }
 
-    const { texto: respuestaCruda, agotados: modelosAgotados, variaPorColor: modelosVariaColor } = await generateResponse(contenidoParaIA, CLIENT_ID, history);
+    const { texto: respuestaCruda, agotados: modelosAgotados, variaPorColor: modelosVariaColor, catalogo } = await generateResponse(contenidoParaIA, CLIENT_ID, history);
 
         // Consultas para el agente 2 (descuentos, SIM, etc.)
     const marcaAgente2 = /\[AGENTE2:([^\]]*)\]/.exec(respuestaCruda);
@@ -711,6 +711,23 @@ async function handleMessage(destino, text, imagenId = null) {
 
     if (textoLimpio) {
       const historialTexto = history.map(m => m.content).filter(Boolean).join(' ');
+
+      // La IA ofreció con precio un iPhone que no está en el inventario
+      // (ver modelosInventados) — en vez de mandarlo, se le dice al
+      // cliente que ese modelo no lo tenemos, igual que el prompt manda
+      // responder un agotado. No pausa la conversación: el cliente puede
+      // seguir preguntando por otro modelo normal.
+      const inventados = modelosInventados(textoLimpio, catalogo);
+      if (inventados.length > 0) {
+        console.error(`🚫 La IA ofreció modelos que no están en el inventario (${inventados.join(', ')}): ${textoLimpio}`);
+        const mensajeNoHay = mensajeModelosInventados(inventados);
+        await sendMessage(destino, mensajeNoHay);
+        if (conversation) {
+          saveMessage(conversation.id, contactId, 'agent', mensajeNoHay)
+            .catch(err => console.error('⚠️ No se guardó la respuesta:', err.message));
+        }
+        return;
+      }
 
       // Modelos con precio por color (ej. iPhone 18 Pro): si la IA dio un
       // precio plano sin aclarar que depende del color, no hace falta
@@ -1443,6 +1460,60 @@ function confirmaPrecioFijoParaModeloVariable(textoMinuscula, modelosVariaColor)
   }
 
   return null;
+}
+
+// La IA (Haiku) a veces ofrece con precio un iPhone que NO está en el
+// inventario: "sabe" que el modelo existe en el mundo real, o lo copia
+// de un ejemplo del prompt. Pasó con el 16 Pro y el 16 Pro Max después
+// de que se quitaron del inventario, y con un "15 Pro 512GB" que nunca
+// existió. El prompt ya lo prohíbe — no basta.
+//
+// Revisa cada frase que trae un precio: si nombra un iPhone (o una
+// capacidad de ese iPhone) que no existe en el inventario, devuelve
+// esos nombres. Las frases negativas ("no lo tenemos", "se nos agotó")
+// no cuentan — ahí la IA está diciendo justamente que no hay.
+const SUFIJOS_IPHONE = { 'pro max': ' Pro Max', 'pro': ' Pro', 'plus': ' Plus', 'mini': ' mini', 'e': 'e' };
+
+function modelosInventados(texto, catalogo) {
+  if (!Array.isArray(catalogo) || catalogo.length === 0) return [];
+
+  const clave = s => String(s || '').toLowerCase().replace(/\s+/g, '');
+  const modelos = new Set(catalogo.map(p => clave(p.nombre)));
+  const modelosConCapacidad = new Set(catalogo.map(p => `${clave(p.nombre)}|${clave(p.capacidad)}`));
+
+  const inventados = new Set();
+  const frases = String(texto || '').split(/\n|(?<=[.!?])\s+/);
+
+  for (const frase of frases) {
+    if (!/\$\s?\d|\b\d{1,3}(\.\d{3}){2}\b/.test(frase)) continue;
+    if (/\bno (lo |la |los |las )?(tenemos|hay|manejamos)|agot|no nos ha llegado|todav[ií]a no/i.test(frase)) continue;
+
+    const patron = /(iphone\s*)?\b(1[1-9])\s*(pro\s*max|pro|plus|mini|e)?\b(?:\s*(?:de\s*)?(\d+)\s*(gb|tb)\b)?/gi;
+    let m;
+    while ((m = patron.exec(frase)) !== null) {
+      const [, prefijo, numero, sufijoCrudo, capacidad, unidad] = m;
+      // Un "16" suelto, sin "iPhone" ni "Pro/Plus...", puede ser cualquier número
+      if (!prefijo && !sufijoCrudo) continue;
+
+      const sufijo = sufijoCrudo ? SUFIJOS_IPHONE[sufijoCrudo.toLowerCase().replace(/\s+/g, ' ')] : '';
+      const nombre = `iPhone ${numero}${sufijo}`;
+
+      if (!modelos.has(clave(nombre))) {
+        inventados.add(nombre);
+      } else if (capacidad && !modelosConCapacidad.has(`${clave(nombre)}|${clave(capacidad + unidad)}`)) {
+        inventados.add(`${nombre} de ${capacidad}${unidad.toUpperCase()}`);
+      }
+    }
+  }
+
+  return [...inventados];
+}
+
+function mensajeModelosInventados(nombres) {
+  const lista = nombres.length === 1
+    ? `El ${nombres[0]}`
+    : `El ${nombres.slice(0, -1).join(', el ')} y el ${nombres[nombres.length - 1]}`;
+  return `${lista} no ${nombres.length === 1 ? 'lo' : 'los'} tenemos en este momento. ¿Te muestro otra opción mientras tanto?`;
 }
 
 // GUARDIÁN DE RESPUESTAS: revisa el texto que la IA va a mandarle al

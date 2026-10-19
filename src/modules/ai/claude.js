@@ -275,7 +275,11 @@ async function getProductsInfo(clientId) {
     ? `PRECIOS POR COLOR: estos modelos cambian de precio según el color y/o\nno vienen en todas las capacidades en todos los colores —\n${notaPrecios.join('\n\n')}\n\nSi el cliente nombra uno de estos modelos con un color puntual, usa el\nprecio EXACTO de esta lista para esa capacidad y ese color — incluso si\nla conversación ya venía hablando de otra capacidad para otro color.\nNUNCA uses un precio "desde" genérico para ellos, y NUNCA asumas que\nun color viene en una capacidad donde la lista dice que no existe.`
     : '';
 
-  return { texto, colores: Array.from(colores), agotados, notaPrecios: textoNotaPrecios, variaPorColor: [...modelosConVariacion] };
+  // Todo lo que existe en el inventario (con o sin stock) — receiver.js
+  // lo usa para bloquear una respuesta que ofrezca un iPhone que no está
+  const catalogo = data.map(p => ({ nombre: p.name, capacidad: p.capacity }));
+
+  return { texto, colores: Array.from(colores), agotados, notaPrecios: textoNotaPrecios, variaPorColor: [...modelosConVariacion], catalogo };
 }
 
 // Lista aparte (igual que notaPrecios) con los modelos/colores que SÍ
@@ -394,7 +398,7 @@ REGLAS:
     const bloqueTexto = response.content.find(b => b.type === 'text');
     if (!bloqueTexto) throw new Error('La respuesta de Claude no trajo ningún bloque de texto');
 
-    return { texto: bloqueTexto.text, agotados: inventario.agotados, variaPorColor: inventario.variaPorColor };
+    return { texto: bloqueTexto.text, agotados: inventario.agotados, variaPorColor: inventario.variaPorColor, catalogo: inventario.catalogo };
   } catch (error) {
     console.error("Error calling Claude API:", error);
     throw new Error(`Failed to generate response: ${error.message}`);
